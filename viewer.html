@@ -315,23 +315,12 @@
     flex-shrink: 0;
   }
 
-  .action-label {
-    flex: 1;
-    font-size: 12px;
-    font-weight: 500;
-    color: #cbd5e1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .action-row.active .action-label { color: #f1f5f9; }
-
   .player-name {
-    font-size: 10px;
-    color: #475569;
-    text-align: right;
-    max-width: 68px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #475569; /* overridden inline per-row */
+    max-width: 72px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -414,13 +403,12 @@
 
   /* ── Action type badge ── */
   .badge {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
     padding: 1px 5px;
     border-radius: 3px;
     flex-shrink: 0;
-    text-transform: uppercase;
   }
 
   .a-serve        { background: #1d4ed8; color: #bfdbfe; }
@@ -450,6 +438,16 @@
     <label for="speedSlider">Speed</label>
     <input id="speedSlider" type="range" min="0.25" max="2" step="0.05" value="1">
     <span class="speed-val" id="speedVal">1.00×</span>
+  </div>
+  <div class="speed-control">
+    <label for="nextDelaySlider">Next</label>
+    <input id="nextDelaySlider" type="range" min="0.5" max="10" step="0.5" value="3">
+    <span class="speed-val" id="nextDelayVal">3.0s</span>
+  </div>
+  <div class="speed-control">
+    <label for="beforeOffsetSlider">Before</label>
+    <input id="beforeOffsetSlider" type="range" min="0" max="5" step="0.5" value="0">
+    <span class="speed-val" id="beforeOffsetVal">0.0s</span>
   </div>
 </header>
 
@@ -510,6 +508,27 @@ speedSlider.addEventListener('input', () => {
   speedValEl.textContent = r.toFixed(2) + '\u00d7';
 });
 
+const nextDelaySlider = document.getElementById('nextDelaySlider');
+const nextDelayValEl  = document.getElementById('nextDelayVal');
+let nextDelay = 3;
+
+nextDelaySlider.addEventListener('input', () => {
+  nextDelay = parseFloat(nextDelaySlider.value);
+  nextDelayValEl.textContent = nextDelay.toFixed(1) + 's';
+});
+
+const beforeOffsetSlider = document.getElementById('beforeOffsetSlider');
+const beforeOffsetValEl  = document.getElementById('beforeOffsetVal');
+let beforeOffset = 0;
+
+beforeOffsetSlider.addEventListener('input', () => {
+  beforeOffset = parseFloat(beforeOffsetSlider.value);
+  beforeOffsetValEl.textContent = beforeOffset.toFixed(1) + 's';
+});
+
+// The column whose row was last clicked owns auto-advance for the current clip
+let activeColumn = null;
+
 // Known file list populated during init
 let availableFiles = [];
 
@@ -530,6 +549,7 @@ function createColumn(initialFile) {
     currentPath:   '',
     dirty:         false,
     editingIdx:    null, // global index into allActions of row being edited
+    activeRowIdx:  null, // filtered-row index of last explicitly clicked row
   };
 
   // ── DOM skeleton ──
@@ -753,29 +773,23 @@ function createColumn(initialFile) {
       row.dataset.ts        = a.timestamp_sec;
       row.dataset.globalIdx = gIdx;
 
-      const dot = document.createElement('div');
-      dot.className = 'player-dot';
-      dot.style.background = playerColor(a.player_id);
-      dot.title = state.PLAYERS[a.player_id]?.name ?? playerLabel(a.player_id);
-
       const tsEl = document.createElement('div');
       tsEl.className = 'ts';
       tsEl.textContent = fmt(a.timestamp_sec);
 
-      const label = document.createElement('div');
-      label.className = 'action-label';
-      label.textContent = a.action;
-
       const badge = document.createElement('div');
       badge.className = `badge ${actionClass(a.action)}`;
-      badge.textContent = a.action.split(' ')[0].slice(0, 3).toUpperCase();
+      badge.textContent = a.action.length > 10 ? a.action.slice(0, 7) + '...' : a.action;
       badge.title = a.action;
 
       const playerEl = document.createElement('div');
       playerEl.className = 'player-name';
       const pName = state.PLAYERS[a.player_id]?.name ?? playerLabel(a.player_id);
-      playerEl.textContent = pName;
-      playerEl.title       = pName;
+      playerEl.innerHTML = 'by <span></span>';
+      const nameSpan = playerEl.querySelector('span');
+      nameSpan.textContent = pName;
+      nameSpan.style.color = playerColor(a.player_id);
+      playerEl.title = pName;
 
       const editBtn = document.createElement('button');
       editBtn.className = 'edit-btn';
@@ -787,19 +801,18 @@ function createColumn(initialFile) {
         applyFilter();
       });
 
-      row.appendChild(dot);
       row.appendChild(tsEl);
-      row.appendChild(label);
       row.appendChild(badge);
       row.appendChild(playerEl);
       row.appendChild(editBtn);
 
       row.addEventListener('click', () => {
         const rowIdx = state.rows.findIndex(r => r.el === row);
+        state.activeRowIdx = rowIdx;
+        activeColumn = col;
         setActive(rowIdx);
-        video.pause();
-        video.currentTime = a.timestamp_sec;
         video.addEventListener('seeked', () => video.play(), { once: true });
+        video.currentTime = Math.max(0, a.timestamp_sec - beforeOffset);
         row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       });
 
@@ -819,8 +832,8 @@ function createColumn(initialFile) {
     buildList(filtered);
   }
 
-  filterAction.addEventListener('change', applyFilter);
-  filterPlayer.addEventListener('change', applyFilter);
+  filterAction.addEventListener('change', () => { state.activeRowIdx = null; applyFilter(); });
+  filterPlayer.addEventListener('change', () => { state.activeRowIdx = null; applyFilter(); });
 
   // ── Load file ──
   async function loadFile(jsonPath) {
@@ -829,6 +842,7 @@ function createColumn(initialFile) {
     state.PLAYERS     = {};
     state.unknownColors = {};
     state.editingIdx  = null;
+    state.activeRowIdx = null;
     state.currentPath = jsonPath;
     clearDirty();
     saveBtn.textContent = 'Save';
@@ -910,6 +924,32 @@ function createColumn(initialFile) {
   // ── Sync playback position → highlight nearest row ──
   function syncTime(t) {
     if (!state.rows.length) return;
+
+    // Auto-advance: when a filter is active and this column owns playback,
+    // jump to the next filtered row once `nextDelay` seconds have elapsed
+    // past the clicked row's timestamp.
+    const filterActive = filterAction.value !== '' || filterPlayer.value !== '';
+    if (filterActive && activeColumn === col && state.activeRowIdx !== null && !video.paused) {
+      const activeTs = state.rows[state.activeRowIdx]?.ts;
+      if (activeTs !== undefined && t >= activeTs + nextDelay) {
+        const next = state.activeRowIdx + 1;
+        if (next < state.rows.length) {
+          state.activeRowIdx = next;
+          setActive(next);
+          const nextTs = state.rows[next].ts;
+          state.rows[next].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          video.addEventListener('seeked', () => video.play(), { once: true });
+          video.currentTime = Math.max(0, nextTs - beforeOffset);
+        } else {
+          // Reached end of filtered list — pause and reset
+          video.pause();
+          state.activeRowIdx = null;
+          activeColumn = null;
+        }
+        return;
+      }
+    }
+
     let best = 0;
     for (let i = 0; i < state.rows.length; i++) {
       if (state.rows[i].ts <= t + 0.15) best = i;
