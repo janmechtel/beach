@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beach Volleyball Action Viewer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 12px 20px;
+    background: #1a1d27;
+    border-bottom: 1px solid #2d3148;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: #f8fafc; }
+  header span { font-size: 12px; color: #64748b; }
+
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    gap: 0;
+  }
+
+  /* ── Video panel ── */
+  .video-panel {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #060810;
+    padding: 20px;
+  }
+
+  video {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 6px;
+    box-shadow: 0 4px 32px rgba(0,0,0,0.6);
+  }
+
+  /* ── Action list panel ── */
+  .list-panel {
+    width: 320px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: #13151f;
+    border-left: 1px solid #2d3148;
+    overflow: hidden;
+  }
+
+  .list-header {
+    padding: 12px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+    border-bottom: 1px solid #2d3148;
+    flex-shrink: 0;
+  }
+
+  .list-header span {
+    float: right;
+    font-weight: 400;
+    color: #475569;
+  }
+
+  .actions-list {
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .actions-list::-webkit-scrollbar { width: 6px; }
+  .actions-list::-webkit-scrollbar-track { background: transparent; }
+  .actions-list::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px; }
+
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid #1c1f2e;
+    transition: background 0.1s;
+    user-select: none;
+  }
+
+  .action-row:hover { background: #1e2235; }
+
+  .action-row.active {
+    background: #1e2a45;
+    border-left: 3px solid #3b82f6;
+    padding-left: 13px;
+  }
+
+  .ts {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: #94a3b8;
+    min-width: 38px;
+  }
+
+  .action-row.active .ts { color: #60a5fa; }
+
+  .player-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .action-label {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    color: #cbd5e1;
+  }
+
+  .action-row.active .action-label { color: #f1f5f9; }
+
+  .player-name {
+    font-size: 11px;
+    color: #475569;
+    text-align: right;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .action-row.active .player-name { color: #64748b; }
+
+  /* action type badge colors */
+  .badge {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+  }
+
+  /* Player colors (generated from id hash) */
+  .p-0 { background: #1e40af; }
+  .p-1 { background: #065f46; }
+  .p-2 { background: #7c2d12; }
+  .p-3 { background: #4c1d95; }
+  .p-4 { background: #713f12; }
+  .p-5 { background: #134e4a; }
+
+  /* Action badge colors */
+  .a-serve        { background: #1d4ed8; color: #bfdbfe; }
+  .a-reception    { background: #065f46; color: #a7f3d0; }
+  .a-set          { background: #92400e; color: #fde68a; }
+  .a-attack       { background: #7f1d1d; color: #fca5a5; }
+  .a-dig          { background: #1e3a5f; color: #93c5fd; }
+  .a-block        { background: #3b0764; color: #d8b4fe; }
+  .a-freeball-s   { background: #1e3a2f; color: #6ee7b7; }
+  .a-freeball-r   { background: #1e2a3a; color: #7dd3fc; }
+
+  .error-msg {
+    padding: 20px;
+    color: #f87171;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Beach Volleyball — Action Viewer</h1>
+  <span id="status">loading...</span>
+</header>
+
+<div class="main">
+  <div class="video-panel">
+    <video id="video" controls preload="metadata">
+      <source src="data/first30.mp4" type="video/mp4">
+    </video>
+  </div>
+
+  <div class="list-panel">
+    <div class="list-header">
+      Actions <span id="count"></span>
+    </div>
+    <div class="actions-list" id="actionsList"></div>
+  </div>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const list  = document.getElementById('actionsList');
+const statusEl = document.getElementById('status');
+const countEl  = document.getElementById('count');
+
+// Stable color per unique player_id
+const playerColors = {};
+const PALETTE = ['#3b82f6','#10b981','#f59e0b','#a78bfa','#f472b6','#34d399'];
+let colorIdx = 0;
+
+function playerColor(id) {
+  if (!playerColors[id]) {
+    playerColors[id] = PALETTE[colorIdx % PALETTE.length];
+    colorIdx++;
+  }
+  return playerColors[id];
+}
+
+function actionClass(action) {
+  const map = {
+    'Serve':              'a-serve',
+    'Reception':          'a-reception',
+    'Set':                'a-set',
+    'Attack':             'a-attack',
+    'Dig':                'a-dig',
+    'Block':              'a-block',
+    'Free Ball Sent':     'a-freeball-s',
+    'Free Ball Received': 'a-freeball-r',
+  };
+  return map[action] ?? 'a-dig';
+}
+
+function fmt(sec) {
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1).padStart(4, '0');
+  return m > 0 ? `${m}:${s}` : `${s}s`;
+}
+
+// Friendly label for player_id: strip leading P\d+_ prefix if present
+function playerLabel(id) {
+  return id.replace(/^P\d+_/, '').replace(/_/g, ' ');
+}
+
+let rows = [];
+
+function buildList(actions) {
+  list.innerHTML = '';
+  rows = [];
+  countEl.textContent = `${actions.length} total`;
+
+  actions.forEach((a, i) => {
+    const row = document.createElement('div');
+    row.className = 'action-row';
+    row.dataset.ts = a.timestamp_sec;
+    row.dataset.idx = i;
+
+    const dot = document.createElement('div');
+    dot.className = 'player-dot';
+    dot.style.background = playerColor(a.player_id);
+
+    const ts = document.createElement('div');
+    ts.className = 'ts';
+    ts.textContent = fmt(a.timestamp_sec);
+
+    const label = document.createElement('div');
+    label.className = 'action-label';
+    label.textContent = a.action;
+
+    const badge = document.createElement('div');
+    badge.className = `badge ${actionClass(a.action)}`;
+    badge.textContent = a.action.split(' ')[0].slice(0, 3).toUpperCase();
+
+    const player = document.createElement('div');
+    player.className = 'player-name';
+    player.textContent = playerLabel(a.player_id);
+    player.title = a.player_id;
+
+    row.appendChild(dot);
+    row.appendChild(ts);
+    row.appendChild(label);
+    row.appendChild(badge);
+    row.appendChild(player);
+
+    row.addEventListener('click', () => {
+      video.currentTime = a.timestamp_sec;
+      video.play();
+      setActive(i);
+      row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+
+    list.appendChild(row);
+    rows.push({ el: row, ts: a.timestamp_sec });
+  });
+}
+
+function setActive(idx) {
+  rows.forEach((r, i) => r.el.classList.toggle('active', i === idx));
+}
+
+// Track playback position → highlight nearest action
+video.addEventListener('timeupdate', () => {
+  if (!rows.length) return;
+  const t = video.currentTime;
+  // Find last action at or before current time
+  let best = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].ts <= t + 0.15) best = i;
+  }
+  setActive(best);
+  // Auto-scroll the active row into view while playing
+  if (!video.paused) {
+    rows[best].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+});
+
+// Load JSON — try relative path first, fallback to sibling
+async function loadActions() {
+  const candidates = ['output/actions.json', 'actions.json'];
+  for (const path of candidates) {
+    try {
+      const r = await fetch(path);
+      if (!r.ok) continue;
+      const data = await r.json();
+      buildList(data);
+      statusEl.textContent = `${path}`;
+      return;
+    } catch (_) { /* try next */ }
+  }
+  list.innerHTML = '<div class="error-msg">Could not load actions.json.<br>Serve this file from the project root:<br><code>python -m http.server 8080</code></div>';
+  statusEl.textContent = 'error';
+}
+
+loadActions();
+</script>
+</body>
+</html>
