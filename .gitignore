@@ -41,10 +41,14 @@ htmlcov/
 # Secrets / local config
 .env
 
-# Raw video input (too large for git) — data/first30.mp4 is excepted below
+# Raw video — no exceptions; all video files stay local
 *.mp4
 *.mov
 *.avi
-!data/first30.mp4
+
 # Local Netlify folder
 .netlify
+
+# Generated data directories — large files, not committed
+chunks/
+output/
