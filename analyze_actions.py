@@ -51,6 +51,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 VIDEO_PATH = Path("data/first30.mp4")
+ANNOTATED_VIDEO_PATH = Path("data/first30_annotated.mp4")
 PLAYERS_PATH = Path("output/players.json")
 FILE_CACHE_PATH = Path("output/.gemini_file_cache.json")
 API_KEY = os.environ.get("GOOGLE_API_KEY", "AIzaSyA1QrfSj0xqtlXnJzqJ12rHTJw0FVgvXp8")
@@ -146,7 +147,7 @@ def make_seed_label(players: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
-def make_prompt(players: dict[str, dict]) -> str:
+def make_prompt(players: dict[str, dict], annotated: bool = False) -> str:
     """Build the action-extraction prompt, including team structure and rules.
 
     Builds dynamically from players.json so the prompt stays in sync with the
@@ -171,8 +172,15 @@ def make_prompt(players: dict[str, dict]) -> str:
         f"{pid} ({players[pid]['name']})" for pid in sorted(team_b)
     )
 
+    annotation_notice = (
+        "IMPORTANT: This video has coloured bounding boxes drawn around each player "
+        "with their ID and name label (e.g. 'P1 Denny'). A bright yellow circle marks "
+        "the ball when detected. Use these visual annotations to identify which player "
+        "performs each action — the labels are ground truth.\n\n"
+    ) if annotated else ""
+
     return f"""
-You are a professional beach volleyball analyst. Watch this video carefully and identify every discrete player action.
+{annotation_notice}You are a professional beach volleyball analyst. Watch this video carefully and identify every discrete player action.
 
 Players — use ONLY the IDs P1, P2, P3, P4:
 {roster}
@@ -203,7 +211,7 @@ Be exhaustive — capture every contact with the ball.
 """
 
 
-def make_seeded_prompt(players: dict[str, dict], timestamps: list[float]) -> str:
+def make_seeded_prompt(players: dict[str, dict], timestamps: list[float], annotated: bool = False) -> str:
     """Build a timestamp-seeded prompt when key moments are already known.
 
     The model only needs to identify who performed the action and what it was
@@ -231,8 +239,15 @@ def make_seeded_prompt(players: dict[str, dict], timestamps: list[float]) -> str
 
     ts_list = "\n".join(f"  {t}" for t in timestamps)
 
+    annotation_notice = (
+        "IMPORTANT: This video has coloured bounding boxes drawn around each player "
+        "with their ID and name label (e.g. 'P1 Denny'). A bright yellow circle marks "
+        "the ball when detected. Use these visual annotations to identify which player "
+        "performs each action — the labels are ground truth.\n\n"
+    ) if annotated else ""
+
     return f"""
-You are a professional beach volleyball analyst.
+{annotation_notice}You are a professional beach volleyball analyst.
 
 Players — use ONLY the IDs P1, P2, P3, P4:
 {roster}
@@ -275,36 +290,51 @@ Do NOT add or remove any timestamps.
 # Gemini file cache
 # ---------------------------------------------------------------------------
 
-def _load_cache() -> dict | None:
-    """Return cached file metadata or None if the cache file is absent."""
+def _load_cache() -> dict:
+    """Return the full cache dict (keyed by video filename stem).
+
+    Backward-compatible: if the cache file contains the old flat format
+    (with a top-level 'name' key) it is migrated in-memory to the new format.
+    The migration is not written back to disk until the next save, which keeps
+    the old entry alive for the raw video without an immediate re-upload.
+    """
     if not FILE_CACHE_PATH.exists():
-        return None
+        return {}
     try:
-        return json.loads(FILE_CACHE_PATH.read_text())
+        raw = json.loads(FILE_CACHE_PATH.read_text())
     except (json.JSONDecodeError, OSError):
-        return None
+        return {}
+    # Migrate old flat format: {"name": ..., "uri": ..., "expires_at": ...}
+    if "name" in raw and "uri" in raw:
+        return {VIDEO_PATH.stem: raw}
+    return raw
 
 
-def _save_cache(file: types.File) -> None:
+def _save_cache(video_path: Path, file: types.File) -> None:
+    """Persist the Gemini file entry for `video_path` under its stem key."""
     FILE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # expiration_time is an ISO-8601 string in the File object
+    cache = _load_cache()
     expires_at = getattr(file, "expiration_time", None)
-    FILE_CACHE_PATH.write_text(
-        json.dumps({"name": file.name, "uri": file.uri, "expires_at": str(expires_at)}, indent=2)
-    )
-
+    cache[video_path.stem] = {
+        "name": file.name,
+        "uri": file.uri,
+        "expires_at": str(expires_at),
+    }
+    FILE_CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 def get_or_upload_file(client: genai.Client, path: Path) -> types.File:
     """Return a ready Gemini File, reusing a cached upload when possible.
 
-    The cache stores the Gemini file name and URI.  On each call we verify the
-    file is still ACTIVE via files.get() before reusing it.  Any failure
-    (expired, deleted, wrong state) triggers a fresh upload and cache update.
+    The cache stores the Gemini file name and URI keyed by video filename stem.
+    On each call we verify the file is still ACTIVE via files.get() before
+    reusing it.  Any failure (expired, deleted, wrong state) triggers a fresh
+    upload and cache update.
     """
     cache = _load_cache()
-    if cache:
+    entry = cache.get(path.stem)
+    if entry:
         try:
-            cached_file = client.files.get(name=cache["name"])
+            cached_file = client.files.get(name=entry["name"])
             if cached_file.state.name == "ACTIVE":
                 print(f"Reusing cached Gemini file: {cached_file.uri}")
                 return cached_file
@@ -314,9 +344,8 @@ def get_or_upload_file(client: genai.Client, path: Path) -> types.File:
             print(f"Cache lookup failed ({exc}) — re-uploading.")
 
     file = _upload_and_wait(client, path)
-    _save_cache(file)
+    _save_cache(path, file)
     return file
-
 
 def _upload_and_wait(client: genai.Client, path: Path) -> types.File:
     print(f"Uploading {path} ({path.stat().st_size / 1024:.0f} KB)...")
@@ -347,6 +376,7 @@ def analyze(
     seed_bytes: bytes | None,
     model: str,
     timestamps: list[float] | None = None,
+    annotated: bool = False,
 ) -> tuple[list[Action], types.GenerateContentResponseUsageMetadata | None]:
     """Send the video (and optionally a seed frame) to Gemini and parse the response.
 
@@ -359,9 +389,9 @@ def analyze(
     schema mismatch that would otherwise silently corrupt downstream consumers.
     """
     if timestamps is not None:
-        prompt = make_seeded_prompt(players, timestamps)
+        prompt = make_seeded_prompt(players, timestamps, annotated=annotated)
     else:
-        prompt = make_prompt(players)
+        prompt = make_prompt(players, annotated=annotated)
 
     print(f"Sending to {model}...")
     response = client.models.generate_content(
@@ -480,6 +510,16 @@ def _parse_args() -> argparse.Namespace:
         help="Number of analysis runs on the same cached upload (default: 1). "
              "Use with --input to measure convergence.",
     )
+    parser.add_argument(
+        "--annotated", "-a",
+        action="store_true",
+        default=False,
+        help=(
+            "Use the YOLO-annotated video (data/first30_annotated.mp4) instead of "
+            "the raw video.  Run annotate_video.py first to generate it.  The prompt "
+            "is updated to tell Gemini about the bounding-box labels."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -496,24 +536,32 @@ def main() -> None:
         timestamps = [ev["timestamp_sec"] for ev in ref_events]
         print(f"Seeded mode: {len(timestamps)} timestamps from {args.input}")
 
+    # Select video source — annotated or raw
+    video_path = ANNOTATED_VIDEO_PATH if args.annotated else VIDEO_PATH
+    if args.annotated and not video_path.exists():
+        raise SystemExit(
+            f"{video_path} not found.  Run `uv run annotate_video.py` first."
+        )
+
     if args.runs < 1:
         raise SystemExit("--runs must be >= 1")
 
     print("=== PROMPT ===")
     if timestamps is not None:
-        print(make_seeded_prompt(players, timestamps))
+        print(make_seeded_prompt(players, timestamps, annotated=args.annotated))
     else:
-        print(make_prompt(players))
+        print(make_prompt(players, annotated=args.annotated))
     print("=== END ===")
 
     use_seed = "pro" in model
     seed_bytes: bytes | None = None
     if use_seed:
+        # Always extract seed frame from the raw video (consistent visual anchor)
         seed_bytes = extract_seed_frame(VIDEO_PATH)
         print(f"Seed frame extracted: {len(seed_bytes):,} bytes")
 
     # Reuse cached Gemini file if still ACTIVE — no re-upload for repeated runs.
-    file = get_or_upload_file(client, VIDEO_PATH)
+    file = get_or_upload_file(client, video_path)
 
     all_runs: list[list[Action]] = []
     total_input_tokens = 0
@@ -524,7 +572,10 @@ def main() -> None:
         if args.runs > 1:
             print(f"\n--- Run {run_idx + 1}/{args.runs} ---")
 
-        actions, usage = analyze(client, file, players, seed_bytes, model, timestamps)
+        actions, usage = analyze(
+            client, file, players, seed_bytes, model, timestamps,
+            annotated=args.annotated,
+        )
 
         if usage:
             total_input_tokens += usage.prompt_token_count or 0
@@ -534,7 +585,7 @@ def main() -> None:
         all_runs.append(actions)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        stem = VIDEO_PATH.stem
+        stem = video_path.stem  # first30 or first30_annotated
         model_tag = model.replace("/", "-")
         run_tag = f"_run{run_idx + 1}" if args.runs > 1 else ""
         mode_tag = "_seeded" if timestamps is not None else ""

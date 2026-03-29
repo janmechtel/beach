@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.1",
     "pydantic>=2.6",
     "google-genai>=1.69.0",
+    "ultralytics>=8.3",
 ]
 
 [project.scripts]
