@@ -17,11 +17,12 @@ env/
 # uv
 .uv/
 
-# Project data — videos and output clips are not committed
+# Project data — large output clips are not committed; demo files are exceptions
 data/*
 !data/.gitkeep
 output/*
 !output/.gitkeep
+!output/actions.json
 
 # IDE
 .idea/
@@ -42,7 +43,8 @@ htmlcov/
 # Secrets / local config
 .env
 
-# Raw video input (too large for git)
+# Raw video input (too large for git) — data/first30.mp4 is excepted below
 *.mp4
 *.mov
 *.avi
+!data/first30.mp4
