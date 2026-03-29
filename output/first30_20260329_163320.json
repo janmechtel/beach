@@ -1,0 +1,107 @@
+[
+  {
+    "timestamp_sec": 2.1,
+    "player_id": "P1_black",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 3.4,
+    "player_id": "P3_blue",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 4.5,
+    "player_id": "P4_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 5.8,
+    "player_id": "P3_blue",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 6.7,
+    "player_id": "P2_grey",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 8.5,
+    "player_id": "P1_black",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 9.8,
+    "player_id": "P2_grey",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 12.5,
+    "player_id": "P3_blue",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 13.8,
+    "player_id": "P1_black",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 14.8,
+    "player_id": "P2_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 16.1,
+    "player_id": "P1_black",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 17.2,
+    "player_id": "P4_grey",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 18.8,
+    "player_id": "P3_blue",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 20.1,
+    "player_id": "P4_grey",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 21.2,
+    "player_id": "P1_black",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 22.5,
+    "player_id": "P2_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 24.5,
+    "player_id": "P3_blue",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 25.8,
+    "player_id": "P1_black",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 26.8,
+    "player_id": "P2_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 28.1,
+    "player_id": "P1_black",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 29.2,
+    "player_id": "P4_grey",
+    "action": "Dig"
+  }
+]

@@ -20,9 +20,7 @@ env/
 # Project data — large output clips are not committed; demo files are exceptions
 data/*
 !data/.gitkeep
-output/*
 !output/.gitkeep
-!output/actions.json
 
 # IDE
 .idea/
@@ -48,3 +46,5 @@ htmlcov/
 *.mov
 *.avi
 !data/first30.mp4
+# Local Netlify folder
+.netlify

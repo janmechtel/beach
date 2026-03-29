@@ -1,0 +1,122 @@
+[
+  {
+    "timestamp_sec": 2.1,
+    "player_id": "P3_blue",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 3.5,
+    "player_id": "P1_black",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 4.5,
+    "player_id": "P2_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 5.8,
+    "player_id": "P1_black",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 7.0,
+    "player_id": "P4_black_tank",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 8.2,
+    "player_id": "P3_blue",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 9.5,
+    "player_id": "P4_black_tank",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 10.2,
+    "player_id": "P1_black",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 10.8,
+    "player_id": "P2_grey",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 11.0,
+    "player_id": "P3_blue",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 12.5,
+    "player_id": "P2_grey",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 13.5,
+    "player_id": "P4_black_tank",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 14.5,
+    "player_id": "P3_blue",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 16.0,
+    "player_id": "P4_black_tank",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 18.5,
+    "player_id": "P4_black_tank",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 19.5,
+    "player_id": "P2_grey",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 20.5,
+    "player_id": "P1_black",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 22.0,
+    "player_id": "P2_grey",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 23.0,
+    "player_id": "P3_blue",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 24.5,
+    "player_id": "P1_black",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 25.5,
+    "player_id": "P4_black_tank",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 26.5,
+    "player_id": "P3_blue",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 28.0,
+    "player_id": "P2_grey",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 29.0,
+    "player_id": "P4_black_tank",
+    "action": "Dig"
+  }
+]

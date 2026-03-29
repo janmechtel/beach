@@ -1,0 +1,132 @@
+[
+  {
+    "timestamp_sec": 1.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Serve"
+  },
+  {
+    "timestamp_sec": 3.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Reception"
+  },
+  {
+    "timestamp_sec": 4.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 5.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 6.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 8.0,
+    "player_id": "P2_black_shirt",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 9.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 10.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 11.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 12.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 13.0,
+    "player_id": "P2_black_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 14.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 15.0,
+    "player_id": "P2_black_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 16.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 17.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 18.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 19.0,
+    "player_id": "P2_black_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 20.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 21.0,
+    "player_id": "P2_black_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 22.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 23.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 24.0,
+    "player_id": "P3_blue_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 25.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Dig"
+  },
+  {
+    "timestamp_sec": 26.0,
+    "player_id": "P2_black_shirt",
+    "action": "Set"
+  },
+  {
+    "timestamp_sec": 27.0,
+    "player_id": "P1_grey_shirt",
+    "action": "Attack"
+  },
+  {
+    "timestamp_sec": 28.0,
+    "player_id": "P4_black_tank_top",
+    "action": "Dig"
+  }
+]

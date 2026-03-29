@@ -28,13 +28,84 @@
   }
 
   header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: #f8fafc; }
-  header span { font-size: 12px; color: #64748b; }
+  header span#status { font-size: 12px; color: #64748b; }
 
+  /* ── Add-column button ── */
+  #addColBtn {
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 5px 12px;
+    border-radius: 4px;
+    border: 1px solid #2d3148;
+    background: #1a1d27;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  #addColBtn:hover { background: #1e2235; border-color: #3b82f6; color: #93c5fd; }
+
+  /* ── Speed control ── */
+  .speed-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    background: #0f1117;
+    border: 1px solid #2d3148;
+    border-radius: 6px;
+    padding: 4px 10px;
+  }
+
+  .speed-control label {
+    font-size: 11px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  .speed-control input[type=range] {
+    -webkit-appearance: none;
+    width: 100px;
+    height: 3px;
+    background: #2d3148;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  .speed-control input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: #3b82f6;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .speed-control input[type=range]::-webkit-slider-thumb:hover { background: #60a5fa; }
+  .speed-control input[type=range]::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border: none; border-radius: 50%;
+    background: #3b82f6; cursor: pointer;
+  }
+
+  .speed-val {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: #e2e8f0;
+    font-weight: 600;
+    min-width: 32px;
+    text-align: right;
+  }
+
+  /* ── Layout ── */
   .main {
     display: flex;
     flex: 1;
     overflow: hidden;
-    gap: 0;
   }
 
   /* ── Video panel ── */
@@ -45,6 +116,7 @@
     justify-content: center;
     background: #060810;
     padding: 20px;
+    min-width: 0;
   }
 
   video {
@@ -54,9 +126,21 @@
     box-shadow: 0 4px 32px rgba(0,0,0,0.6);
   }
 
-  /* ── Action list panel ── */
+  /* ── Column container ── */
+  .columns-container {
+    display: flex;
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .columns-container::-webkit-scrollbar { height: 6px; }
+  .columns-container::-webkit-scrollbar-track { background: transparent; }
+  .columns-container::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px; }
+
+  /* ── Single action-list column ── */
   .list-panel {
-    width: 320px;
+    width: 300px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -65,21 +149,128 @@
     overflow: hidden;
   }
 
-  .list-header {
-    padding: 12px 16px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #64748b;
+  /* ── Column header (file picker + close + save) ── */
+  .col-header {
+    padding: 8px 10px;
+    background: #1a1d27;
     border-bottom: 1px solid #2d3148;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 
-  .list-header span {
-    float: right;
-    font-weight: 400;
+  .col-header-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .col-file-select {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    font-family: inherit;
+    color: #cbd5e1;
+    background: #0f1117;
+    border: 1px solid #2d3148;
+    border-radius: 4px;
+    padding: 4px 20px 4px 6px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364748b'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .col-file-select:focus { border-color: #3b82f6; }
+  .col-file-select option { background: #1a1d27; }
+
+  .col-save-btn {
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid #2d3148;
+    background: #1a1d27;
     color: #475569;
+    cursor: default;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .col-save-btn.dirty {
+    background: #1d4ed8;
+    color: #eff6ff;
+    border-color: #3b82f6;
+    cursor: pointer;
+  }
+  .col-save-btn.dirty:hover { background: #2563eb; }
+  .col-save-btn.saving { background: #0f1117; color: #64748b; cursor: default; }
+
+  /* Close column button — hidden when only 1 column */
+  .col-close-btn {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #374162;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.1s, background 0.1s, border-color 0.1s;
+  }
+  .col-close-btn:hover { color: #f87171; background: #1c0606; border-color: #450a0a; }
+  .col-close-btn.hidden { visibility: hidden; pointer-events: none; }
+
+  /* ── Filters ── */
+  .filters {
+    display: flex;
+    gap: 6px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #2d3148;
+    flex-shrink: 0;
+    background: #13151f;
+  }
+
+  .filters select {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    font-family: inherit;
+    color: #cbd5e1;
+    background: #0f1117;
+    border: 1px solid #2d3148;
+    border-radius: 4px;
+    padding: 4px 6px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364748b'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    padding-right: 18px;
+  }
+  .filters select:focus { border-color: #3b82f6; }
+  .filters select option { background: #1a1d27; }
+
+  /* ── Actions list ── */
+  .col-count {
+    font-size: 10px;
+    color: #475569;
+    padding: 5px 10px 3px;
+    flex-shrink: 0;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .actions-list {
@@ -91,82 +282,147 @@
   .actions-list::-webkit-scrollbar-track { background: transparent; }
   .actions-list::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px; }
 
+  /* ── Action rows ── */
   .action-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 9px 16px;
+    gap: 8px;
+    padding: 8px 10px;
     cursor: pointer;
     border-bottom: 1px solid #1c1f2e;
     transition: background 0.1s;
     user-select: none;
   }
-
   .action-row:hover { background: #1e2235; }
-
   .action-row.active {
     background: #1e2a45;
     border-left: 3px solid #3b82f6;
-    padding-left: 13px;
+    padding-left: 7px;
   }
 
   .ts {
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     color: #94a3b8;
-    min-width: 38px;
+    min-width: 36px;
+    flex-shrink: 0;
   }
-
   .action-row.active .ts { color: #60a5fa; }
 
   .player-dot {
-    width: 8px;
-    height: 8px;
+    width: 7px; height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
   }
 
   .action-label {
     flex: 1;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
     color: #cbd5e1;
-  }
-
-  .action-row.active .action-label { color: #f1f5f9; }
-
-  .player-name {
-    font-size: 11px;
-    color: #475569;
-    text-align: right;
-    max-width: 90px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .action-row.active .action-label { color: #f1f5f9; }
 
+  .player-name {
+    font-size: 10px;
+    color: #475569;
+    text-align: right;
+    max-width: 68px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
   .action-row.active .player-name { color: #64748b; }
 
-  /* action type badge colors */
+  /* ── Edit icon button ── */
+  .edit-btn {
+    flex-shrink: 0;
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 3px;
+    border: none;
+    background: transparent;
+    color: #374162;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0.4;
+    transition: opacity 0.1s, color 0.1s, background 0.1s;
+  }
+  .edit-btn:hover { color: #93c5fd; background: #1e2a45; opacity: 1; }
+
+  /* ── Inline edit row ── */
+  .edit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border-bottom: 1px solid #1c1f2e;
+    background: #0f1725;
+    border-left: 3px solid #f59e0b;
+  }
+
+  .edit-row-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .edit-row input[type=number],
+  .edit-row select {
+    font-size: 12px;
+    font-family: inherit;
+    color: #e2e8f0;
+    background: #0f1117;
+    border: 1px solid #2d3148;
+    border-radius: 4px;
+    padding: 4px 6px;
+    outline: none;
+  }
+  .edit-row input[type=number]:focus,
+  .edit-row select:focus { border-color: #f59e0b; }
+  .edit-row input[type=number] { width: 68px; font-variant-numeric: tabular-nums; }
+  .edit-row select { flex: 1; min-width: 0; }
+  .edit-row select option { background: #1a1d27; }
+
+  .edit-row-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .edit-row-actions button {
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 3px 10px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .btn-confirm { background: #1d4ed8; color: #eff6ff; border-color: #3b82f6; }
+  .btn-confirm:hover { background: #2563eb; }
+  .btn-cancel { background: transparent; color: #64748b; border-color: #2d3148; }
+  .btn-cancel:hover { color: #94a3b8; border-color: #374162; }
+  .btn-delete { background: transparent; color: #7f1d1d; border-color: #450a0a; margin-right: auto; }
+  .btn-delete:hover { color: #fca5a5; border-color: #7f1d1d; background: #1c0606; }
+
+  /* ── Action type badge ── */
   .badge {
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.04em;
-    padding: 1px 6px;
+    padding: 1px 5px;
     border-radius: 3px;
     flex-shrink: 0;
     text-transform: uppercase;
   }
 
-  /* Player colors (generated from id hash) */
-  .p-0 { background: #1e40af; }
-  .p-1 { background: #065f46; }
-  .p-2 { background: #7c2d12; }
-  .p-3 { background: #4c1d95; }
-  .p-4 { background: #713f12; }
-  .p-5 { background: #134e4a; }
-
-  /* Action badge colors */
   .a-serve        { background: #1d4ed8; color: #bfdbfe; }
   .a-reception    { background: #065f46; color: #a7f3d0; }
   .a-set          { background: #92400e; color: #fde68a; }
@@ -177,9 +433,9 @@
   .a-freeball-r   { background: #1e2a3a; color: #7dd3fc; }
 
   .error-msg {
-    padding: 20px;
+    padding: 16px 10px;
     color: #f87171;
-    font-size: 13px;
+    font-size: 12px;
     line-height: 1.5;
   }
 </style>
@@ -188,42 +444,31 @@
 
 <header>
   <h1>Beach Volleyball — Action Viewer</h1>
-  <span id="status">loading...</span>
+  <span id="status"></span>
+  <button id="addColBtn">+ Column</button>
+  <div class="speed-control">
+    <label for="speedSlider">Speed</label>
+    <input id="speedSlider" type="range" min="0.25" max="2" step="0.05" value="1">
+    <span class="speed-val" id="speedVal">1.00×</span>
+  </div>
 </header>
 
 <div class="main">
   <div class="video-panel">
-    <video id="video" controls preload="metadata">
+    <video id="video" controls preload="auto">
       <source src="data/first30.mp4" type="video/mp4">
     </video>
   </div>
-
-  <div class="list-panel">
-    <div class="list-header">
-      Actions <span id="count"></span>
-    </div>
-    <div class="actions-list" id="actionsList"></div>
-  </div>
+  <div class="columns-container" id="columnsContainer"></div>
 </div>
 
 <script>
-const video = document.getElementById('video');
-const list  = document.getElementById('actionsList');
-const statusEl = document.getElementById('status');
-const countEl  = document.getElementById('count');
+// ── Constants ────────────────────────────────────────────────────────────────
 
-// Stable color per unique player_id
-const playerColors = {};
-const PALETTE = ['#3b82f6','#10b981','#f59e0b','#a78bfa','#f472b6','#34d399'];
-let colorIdx = 0;
-
-function playerColor(id) {
-  if (!playerColors[id]) {
-    playerColors[id] = PALETTE[colorIdx % PALETTE.length];
-    colorIdx++;
-  }
-  return playerColors[id];
-}
+const ACTION_TYPES = [
+  'Serve', 'Reception', 'Set', 'Attack',
+  'Dig', 'Block', 'Free Ball Sent', 'Free Ball Received',
+];
 
 function actionClass(action) {
   const map = {
@@ -245,101 +490,522 @@ function fmt(sec) {
   return m > 0 ? `${m}:${s}` : `${s}s`;
 }
 
-// Friendly label for player_id: strip leading P\d+_ prefix if present
+// Strip leading P\d+_ prefix, replace underscores
 function playerLabel(id) {
   return id.replace(/^P\d+_/, '').replace(/_/g, ' ');
 }
 
-let rows = [];
+// ── Global state ─────────────────────────────────────────────────────────────
 
-function buildList(actions) {
-  list.innerHTML = '';
-  rows = [];
-  countEl.textContent = `${actions.length} total`;
+const video       = document.getElementById('video');
+const statusEl    = document.getElementById('status');
+const speedSlider = document.getElementById('speedSlider');
+const speedValEl  = document.getElementById('speedVal');
+const addColBtn   = document.getElementById('addColBtn');
+const container   = document.getElementById('columnsContainer');
 
-  actions.forEach((a, i) => {
-    const row = document.createElement('div');
-    row.className = 'action-row';
-    row.dataset.ts = a.timestamp_sec;
-    row.dataset.idx = i;
+speedSlider.addEventListener('input', () => {
+  const r = parseFloat(speedSlider.value);
+  video.playbackRate = r;
+  speedValEl.textContent = r.toFixed(2) + '\u00d7';
+});
 
-    const dot = document.createElement('div');
-    dot.className = 'player-dot';
-    dot.style.background = playerColor(a.player_id);
+// Known file list populated during init
+let availableFiles = [];
 
-    const ts = document.createElement('div');
-    ts.className = 'ts';
-    ts.textContent = fmt(a.timestamp_sec);
+// All live columns
+const columns = [];
 
-    const label = document.createElement('div');
-    label.className = 'action-label';
-    label.textContent = a.action;
+// ── Column factory ────────────────────────────────────────────────────────────
+// Each column is a self-contained object that manages its own DOM, state, and
+// event listeners. It exposes `syncTime(t)` for the global timeupdate handler.
 
-    const badge = document.createElement('div');
-    badge.className = `badge ${actionClass(a.action)}`;
-    badge.textContent = a.action.split(' ')[0].slice(0, 3).toUpperCase();
+function createColumn(initialFile) {
+  // ── Per-column state ──
+  const state = {
+    allActions:    [],
+    rows:          [],   // [{el, ts}] parallel to filtered view
+    PLAYERS:       {},
+    unknownColors: {},
+    currentPath:   '',
+    dirty:         false,
+    editingIdx:    null, // global index into allActions of row being edited
+  };
 
-    const player = document.createElement('div');
-    player.className = 'player-name';
-    player.textContent = playerLabel(a.player_id);
-    player.title = a.player_id;
+  // ── DOM skeleton ──
+  const panel = document.createElement('div');
+  panel.className = 'list-panel';
 
-    row.appendChild(dot);
-    row.appendChild(ts);
-    row.appendChild(label);
-    row.appendChild(badge);
-    row.appendChild(player);
+  // Header
+  const colHeader = document.createElement('div');
+  colHeader.className = 'col-header';
 
-    row.addEventListener('click', () => {
-      video.currentTime = a.timestamp_sec;
-      video.play();
-      setActive(i);
-      row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  const colHeaderTop = document.createElement('div');
+  colHeaderTop.className = 'col-header-top';
+
+  const fileSelect = document.createElement('select');
+  fileSelect.className = 'col-file-select';
+  fileSelect.title = 'Select file for this column';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'col-save-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.title = 'Save edits back to file';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'col-close-btn';
+  closeBtn.title = 'Remove this column';
+  closeBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="1" y1="1" x2="9" y2="9"/><line x1="9" y1="1" x2="1" y2="9"/></svg>`;
+
+  colHeaderTop.appendChild(fileSelect);
+  colHeaderTop.appendChild(saveBtn);
+  colHeaderTop.appendChild(closeBtn);
+  colHeader.appendChild(colHeaderTop);
+
+  // Filters
+  const filtersDiv = document.createElement('div');
+  filtersDiv.className = 'filters';
+
+  const filterPlayer = document.createElement('select');
+  filterPlayer.innerHTML = '<option value="">All players</option>';
+
+  const filterAction = document.createElement('select');
+  filterAction.innerHTML = '<option value="">All actions</option>';
+
+  filtersDiv.appendChild(filterPlayer);
+  filtersDiv.appendChild(filterAction);
+
+  // Count
+  const countEl = document.createElement('div');
+  countEl.className = 'col-count';
+
+  // List
+  const listEl = document.createElement('div');
+  listEl.className = 'actions-list';
+
+  panel.appendChild(colHeader);
+  panel.appendChild(filtersDiv);
+  panel.appendChild(countEl);
+  panel.appendChild(listEl);
+
+  // ── Populate file picker ──
+  availableFiles.forEach(path => {
+    const o = document.createElement('option');
+    o.value = path;
+    o.textContent = path.split('/').pop();
+    fileSelect.appendChild(o);
+  });
+  if (initialFile) fileSelect.value = initialFile;
+
+  // ── Helpers ──
+  function playerColor(id) {
+    if (state.PLAYERS[id]?.color) return state.PLAYERS[id].color;
+    if (state.unknownColors[id])  return state.unknownColors[id];
+    const hue = Math.floor(Math.random() * 360);
+    const color = `hsl(${hue}, 65%, 62%)`;
+    state.unknownColors[id] = color;
+    return color;
+  }
+
+  function markDirty() {
+    state.dirty = true;
+    saveBtn.classList.add('dirty');
+  }
+
+  function clearDirty() {
+    state.dirty = false;
+    saveBtn.classList.remove('dirty');
+  }
+
+  function resetFilters() {
+    filterAction.options.length = 1;
+    filterPlayer.options.length = 1;
+    filterAction.value = '';
+    filterPlayer.value = '';
+  }
+
+  function setActive(idx) {
+    state.rows.forEach((r, i) => r.el.classList.toggle('active', i === idx));
+  }
+
+  // ── Build list ──
+  function buildList(actions) {
+    listEl.innerHTML = '';
+    state.rows = [];
+
+    const total = state.allActions.length;
+    countEl.textContent = actions.length === total
+      ? `${actions.length} total`
+      : `${actions.length} / ${total}`;
+
+    const globalIdxOf = (a) => state.allActions.indexOf(a);
+
+    actions.forEach((a) => {
+      const gIdx = globalIdxOf(a);
+
+      if (gIdx === state.editingIdx) {
+        // ── Inline edit row ───────────────────────────────────────────
+        const er = document.createElement('div');
+        er.className = 'edit-row';
+        er.dataset.globalIdx = gIdx;
+
+        const top = document.createElement('div');
+        top.className = 'edit-row-top';
+
+        const tsInput = document.createElement('input');
+        tsInput.type  = 'number';
+        tsInput.step  = '0.1';
+        tsInput.min   = '0';
+        tsInput.value = a.timestamp_sec.toFixed(1);
+        tsInput.title = 'Timestamp (seconds)';
+
+        const pSel = document.createElement('select');
+        Object.keys(state.PLAYERS).sort().forEach(pid => {
+          const o = document.createElement('option');
+          o.value = pid;
+          o.textContent = `${pid} – ${state.PLAYERS[pid]?.name ?? playerLabel(pid)}`;
+          if (pid === a.player_id) o.selected = true;
+          pSel.appendChild(o);
+        });
+        // Fallback: if player not in PLAYERS map, add a raw option
+        if (!state.PLAYERS[a.player_id]) {
+          const o = document.createElement('option');
+          o.value = a.player_id;
+          o.textContent = playerLabel(a.player_id);
+          o.selected = true;
+          pSel.insertBefore(o, pSel.firstChild);
+        }
+
+        const aSel = document.createElement('select');
+        ACTION_TYPES.forEach(t => {
+          const o = document.createElement('option');
+          o.value = t; o.textContent = t;
+          if (t === a.action) o.selected = true;
+          aSel.appendChild(o);
+        });
+
+        top.appendChild(tsInput);
+        top.appendChild(pSel);
+        top.appendChild(aSel);
+
+        const btns = document.createElement('div');
+        btns.className = 'edit-row-actions';
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-delete';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+          if (!confirm('Delete this action?')) return;
+          state.allActions.splice(gIdx, 1);
+          state.editingIdx = null;
+          markDirty();
+          applyFilter();
+        });
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', () => {
+          state.editingIdx = null;
+          applyFilter();
+        });
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'btn-confirm';
+        confirmBtn.textContent = 'Save row';
+
+        const doCommit = () => {
+          const entry = state.allActions[gIdx];
+          entry.timestamp_sec = parseFloat(tsInput.value);
+          entry.player_id     = pSel.value;
+          entry.action        = aSel.value;
+          if ('player_description' in entry) {
+            entry.player_description =
+              state.PLAYERS[pSel.value]?.name ?? playerLabel(pSel.value);
+          }
+          state.editingIdx = null;
+          markDirty();
+          applyFilter();
+        };
+        confirmBtn.addEventListener('click', doCommit);
+
+        er.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter')  { e.preventDefault(); doCommit(); }
+          if (e.key === 'Escape') { e.preventDefault(); state.editingIdx = null; applyFilter(); }
+        });
+
+        btns.appendChild(delBtn);
+        btns.appendChild(cancelBtn);
+        btns.appendChild(confirmBtn);
+
+        er.appendChild(top);
+        er.appendChild(btns);
+        listEl.appendChild(er);
+
+        requestAnimationFrame(() => tsInput.focus());
+        // Edit rows are not tracked in state.rows (not part of playback position sync)
+        return;
+      }
+
+      // ── Normal view row ───────────────────────────────────────────────────
+      const row = document.createElement('div');
+      row.className = 'action-row';
+      row.dataset.ts        = a.timestamp_sec;
+      row.dataset.globalIdx = gIdx;
+
+      const dot = document.createElement('div');
+      dot.className = 'player-dot';
+      dot.style.background = playerColor(a.player_id);
+      dot.title = state.PLAYERS[a.player_id]?.name ?? playerLabel(a.player_id);
+
+      const tsEl = document.createElement('div');
+      tsEl.className = 'ts';
+      tsEl.textContent = fmt(a.timestamp_sec);
+
+      const label = document.createElement('div');
+      label.className = 'action-label';
+      label.textContent = a.action;
+
+      const badge = document.createElement('div');
+      badge.className = `badge ${actionClass(a.action)}`;
+      badge.textContent = a.action.split(' ')[0].slice(0, 3).toUpperCase();
+      badge.title = a.action;
+
+      const playerEl = document.createElement('div');
+      playerEl.className = 'player-name';
+      const pName = state.PLAYERS[a.player_id]?.name ?? playerLabel(a.player_id);
+      playerEl.textContent = pName;
+      playerEl.title       = pName;
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'edit-btn';
+      editBtn.title = 'Edit this action';
+      editBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2-9 9H2.5v-2l9-9z"/></svg>`;
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.editingIdx = gIdx;
+        applyFilter();
+      });
+
+      row.appendChild(dot);
+      row.appendChild(tsEl);
+      row.appendChild(label);
+      row.appendChild(badge);
+      row.appendChild(playerEl);
+      row.appendChild(editBtn);
+
+      row.addEventListener('click', () => {
+        const rowIdx = state.rows.findIndex(r => r.el === row);
+        setActive(rowIdx);
+        video.pause();
+        video.currentTime = a.timestamp_sec;
+        video.addEventListener('seeked', () => video.play(), { once: true });
+        row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+
+      listEl.appendChild(row);
+      state.rows.push({ el: row, ts: a.timestamp_sec });
+    });
+  }
+
+  // ── Filter ──
+  function applyFilter() {
+    const act = filterAction.value;
+    const ply = filterPlayer.value;
+    const filtered = state.allActions.filter(a =>
+      (!act || a.action === act) &&
+      (!ply || a.player_id === ply)
+    );
+    buildList(filtered);
+  }
+
+  filterAction.addEventListener('change', applyFilter);
+  filterPlayer.addEventListener('change', applyFilter);
+
+  // ── Load file ──
+  async function loadFile(jsonPath) {
+    state.allActions  = [];
+    state.rows        = [];
+    state.PLAYERS     = {};
+    state.unknownColors = {};
+    state.editingIdx  = null;
+    state.currentPath = jsonPath;
+    clearDirty();
+    saveBtn.textContent = 'Save';
+    resetFilters();
+    listEl.innerHTML = '';
+    countEl.textContent = '';
+
+    try {
+      const r = await fetch(jsonPath);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      state.allActions = await r.json();
+    } catch (e) {
+      listEl.innerHTML = `<div class="error-msg">Could not load ${jsonPath}.<br>${e.message}</div>`;
+      return;
+    }
+
+    try {
+      const dir = jsonPath.substring(0, jsonPath.lastIndexOf('/') + 1);
+      const pr  = await fetch(dir + 'players.json');
+      if (pr.ok) state.PLAYERS = await pr.json();
+    } catch (_) { /* optional */ }
+
+    // Populate action-type filter (natural order from ACTION_TYPES)
+    const actionTypes = ACTION_TYPES.filter(k => state.allActions.some(a => a.action === k));
+    actionTypes.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t; o.textContent = t;
+      filterAction.appendChild(o);
     });
 
-    list.appendChild(row);
-    rows.push({ el: row, ts: a.timestamp_sec });
+    // Populate player filter (alphabetical by display label)
+    const playerIds = [...new Set(state.allActions.map(a => a.player_id))];
+    playerIds.sort((a, b) => playerLabel(a).localeCompare(playerLabel(b)));
+    playerIds.forEach(id => {
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = state.PLAYERS[id]?.name ?? playerLabel(id);
+      filterPlayer.appendChild(o);
+    });
+
+    applyFilter();
+  }
+
+  // ── Save ──
+  saveBtn.addEventListener('click', async () => {
+    if (!state.dirty || saveBtn.classList.contains('saving')) return;
+
+    state.allActions.sort((a, b) => a.timestamp_sec - b.timestamp_sec);
+    saveBtn.classList.remove('dirty');
+    saveBtn.classList.add('saving');
+    saveBtn.textContent = 'Saving…';
+
+    try {
+      const res = await fetch('/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: state.currentPath, data: state.allActions }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearDirty();
+      saveBtn.textContent = 'Saved';
+      setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+      applyFilter();
+    } catch (e) {
+      saveBtn.classList.add('dirty');
+      saveBtn.textContent = 'Save';
+      alert(`Save failed: ${e.message}\n\nMake sure you started server.py.`);
+    } finally {
+      saveBtn.classList.remove('saving');
+    }
+  });
+
+  // ── File picker change ──
+  fileSelect.addEventListener('change', () => loadFile(fileSelect.value));
+
+  // ── Close button ──
+  closeBtn.addEventListener('click', () => removeColumn(col));
+
+  // ── Sync playback position → highlight nearest row ──
+  function syncTime(t) {
+    if (!state.rows.length) return;
+    let best = 0;
+    for (let i = 0; i < state.rows.length; i++) {
+      if (state.rows[i].ts <= t + 0.15) best = i;
+    }
+    setActive(best);
+    if (!video.paused) {
+      state.rows[best].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // ── Public interface ──
+  const col = { panel, fileSelect, loadFile, syncTime, closeBtn };
+
+  // Load initial file if provided
+  if (initialFile) loadFile(initialFile);
+
+  return col;
+}
+
+// ── Column management ─────────────────────────────────────────────────────────
+
+function addColumn(initialFile) {
+  const col = createColumn(initialFile);
+  columns.push(col);
+  container.appendChild(col.panel);
+  updateCloseButtons();
+  return col;
+}
+
+function removeColumn(col) {
+  if (columns.length <= 1) return; // always keep at least one column
+  const idx = columns.indexOf(col);
+  if (idx === -1) return;
+  columns.splice(idx, 1);
+  container.removeChild(col.panel);
+  updateCloseButtons();
+}
+
+// Show close buttons only when there are multiple columns
+function updateCloseButtons() {
+  columns.forEach(col => {
+    col.closeBtn.classList.toggle('hidden', columns.length === 1);
   });
 }
 
-function setActive(idx) {
-  rows.forEach((r, i) => r.el.classList.toggle('active', i === idx));
-}
-
-// Track playback position → highlight nearest action
-video.addEventListener('timeupdate', () => {
-  if (!rows.length) return;
-  const t = video.currentTime;
-  // Find last action at or before current time
-  let best = 0;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].ts <= t + 0.15) best = i;
-  }
-  setActive(best);
-  // Auto-scroll the active row into view while playing
-  if (!video.paused) {
-    rows[best].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
+addColBtn.addEventListener('click', () => {
+  // Default new column to the most recent file
+  const defaultFile = availableFiles[availableFiles.length - 1] ?? '';
+  addColumn(defaultFile);
 });
 
-// Load JSON — try relative path first, fallback to sibling
-async function loadActions() {
-  const candidates = ['output/actions.json', 'actions.json'];
-  for (const path of candidates) {
-    try {
-      const r = await fetch(path);
-      if (!r.ok) continue;
-      const data = await r.json();
-      buildList(data);
-      statusEl.textContent = `${path}`;
-      return;
-    } catch (_) { /* try next */ }
-  }
-  list.innerHTML = '<div class="error-msg">Could not load actions.json.<br>Serve this file from the project root:<br><code>python -m http.server 8080</code></div>';
-  statusEl.textContent = 'error';
+// ── Video → sync all columns ──────────────────────────────────────────────────
+
+video.addEventListener('timeupdate', () => {
+  const t = video.currentTime;
+  columns.forEach(col => col.syncTime(t));
+});
+
+// ── Status line: show filenames of all loaded columns ─────────────────────────
+
+// Keeping status minimal — just show how many columns are active
+function updateStatus() {
+  statusEl.textContent = `${columns.length} column${columns.length !== 1 ? 's' : ''}`;
 }
 
-loadActions();
+// Patch updateStatus into column loads via MutationObserver on the container
+const statusObserver = new MutationObserver(updateStatus);
+statusObserver.observe(container, { childList: true });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+async function init() {
+  // Scan output/ directory for first*.json files; sort = chronological
+  try {
+    const r = await fetch('output/');
+    if (r.ok) {
+      const html = await r.text();
+      const re = /href="(first[^"]+\.json)"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) availableFiles.push('output/' + m[1]);
+      availableFiles.sort();
+    }
+  } catch (_) { /* fall through */ }
+
+  if (!availableFiles.length) {
+    availableFiles = ['output/actions.json', 'actions.json'];
+  }
+
+  // Column 1: always the manual reference; column 2: most recent file
+  const MANUAL = 'output/first30_Manual.json';
+  const latest = availableFiles[availableFiles.length - 1] ?? MANUAL;
+  addColumn(MANUAL);
+  addColumn(latest);
+}
+
+init();
 </script>
 </body>
 </html>
