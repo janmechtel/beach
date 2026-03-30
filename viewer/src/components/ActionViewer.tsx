@@ -51,6 +51,9 @@ export default function ActionViewer({ stem }: Props) {
   const [actionFiles, setActionFiles] = useState<string[]>([]);
   const [videoFile, setVideoFile] = useState<string | null>(null);
   const [columns, setColumns] = useState<ColumnDef[]>([]);
+  const [secondsBefore, setSecondsBefore] = useState(0.0);
+  const [secondsAfter, setSecondsAfter] = useState(2.0);
+  const [repeatMode, setRepeatMode] = useState(false);
 
   const [playerState, playerControls] = useVideoPlayer();
   const { setVideoEl, seekTo, seekAndPlay, togglePlay, setPlaybackRate } = playerControls;
@@ -82,14 +85,51 @@ export default function ActionViewer({ stem }: Props) {
     setColumns((cols) => cols.filter((c) => c.id !== id));
   }, []);
 
-  // Seek + play at a given timestamp (used by Before-clip controls)
-  const handlePlayAt = useCallback(
-    (t: number) => seekAndPlay(t),
-    [seekAndPlay]
-  );
 
   return (
     <div className="flex flex-col h-full gap-3">
+      {/* Global clip controls */}
+      <div className="flex items-center justify-end gap-3 text-xs border border-border rounded-lg bg-card px-3 py-2">
+        <label className="flex items-center gap-2 text-muted-foreground" title="Clip window around action">
+          <span>Show</span>
+          <input
+            type="range"
+            min={0}
+            max={30}
+            step={0.5}
+            value={secondsBefore}
+            onChange={(e) => setSecondsBefore(parseFloat(e.target.value))}
+            className="w-28 h-1 accent-primary cursor-pointer"
+          />
+          <span className="font-mono w-8 text-right">{secondsBefore.toFixed(1)}s</span>
+          <span>seconds before and</span>
+          <input
+            type="range"
+            min={0.5}
+            max={30}
+            step={0.5}
+            value={secondsAfter}
+            onChange={(e) => setSecondsAfter(parseFloat(e.target.value))}
+            className="w-28 h-1 accent-primary cursor-pointer"
+          />
+          <span className="font-mono w-8 text-right">{secondsAfter.toFixed(1)}s</span>
+          <span>seconds after</span>
+        </label>
+        <button
+          onClick={() => setRepeatMode((r) => !r)}
+          className={
+            `px-2 py-0.5 rounded border ${
+              repeatMode
+                ? "border-blue-500 text-blue-400"
+                : "border-border text-muted-foreground hover:bg-accent"
+            }`
+          }
+          title="Toggle repeat clip"
+        >
+          ↺
+        </button>
+      </div>
+
       {/* Video + column layout */}
       <div className="flex gap-3 flex-1 min-h-0">
         {/* Left: video player */}
@@ -113,8 +153,10 @@ export default function ActionViewer({ stem }: Props) {
               availableFiles={actionFiles}
               initialFile={col.initialFile}
               currentTime={playerState.currentTime}
-              onSeek={seekTo}
-              onPlayAt={handlePlayAt}
+              onPlayClip={seekAndPlay}
+              secondsBefore={secondsBefore}
+              secondsAfter={secondsAfter}
+              repeatMode={repeatMode}
               canClose={columns.length > 1}
               onClose={() => removeColumn(col.id)}
             />

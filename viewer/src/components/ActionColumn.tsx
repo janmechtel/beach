@@ -10,24 +10,26 @@ interface Props {
   availableFiles: string[];
   initialFile?: string;
   currentTime: number;
-  /** Called when user clicks a row — seekTo timestamp */
-  onSeek: (t: number) => void;
-  /** Called on play-after-seek (e.g. Next button) */
-  onPlayAt: (t: number) => void;
+  /** Called to seek+play a clip: same signature as seekAndPlay */
+  onPlayClip: (start: number, durationSec?: number | null, onEnd?: () => void) => void;
   canClose: boolean;
+  secondsBefore: number;
+  secondsAfter: number;
+  repeatMode: boolean;
   onClose: () => void;
 }
 
-// Clip playback constants (matching viewer.html behavior)
-const BEFORE_OFFSET = 1.5;   // seconds before action to start clip
+// Clip timing and repeat mode are controlled globally by ActionViewer.
 
 export default function ActionColumn({
   stem,
   availableFiles,
   initialFile,
   currentTime,
-  onSeek,
-  onPlayAt,
+  onPlayClip,
+  secondsBefore,
+  secondsAfter,
+  repeatMode,
   canClose,
   onClose,
 }: Props) {
@@ -35,8 +37,6 @@ export default function ActionColumn({
   const [filterPlayer, setFilterPlayer] = useState("");
   const [filterAction, setFilterAction] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
-  const [repeatMode, setRepeatMode] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const [actionsState, actionsControls] = useActions();
@@ -47,7 +47,6 @@ export default function ActionColumn({
     if (selectedFile && stem) {
       actionsControls.load(stem, selectedFile);
       setEditingIndex(null);
-      setActiveRowIndex(null);
     }
   }, [stem, selectedFile]);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -76,21 +75,50 @@ export default function ActionColumn({
   useEffect(() => {
     if (listRef.current) {
       const rows = listRef.current.querySelectorAll("[data-row]");
-      rows[nearestIdx]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      const row = rows[nearestIdx] as Element | undefined;
+      if (row && "scrollIntoView" in row && typeof row.scrollIntoView === "function") {
+        row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
     }
   }, [nearestIdx]);
 
-  const handleRowClick = useCallback(
-    (filteredIdx: number) => {
-      setActiveRowIndex(filteredIdx);
-      const ts = filtered[filteredIdx].timestamp_sec;
-      // Seek to exact timestamp on click; nav buttons (◀▶) trigger play-from-before.
-      onSeek(ts);
+
+  /**
+   * Seek to filtered[idx] with the configured before/after offsets.
+   * onEnd chains to the next filtered action, or stops at the last one.
+   * repeatMode re-plays the same clip instead of advancing.
+   */
+  const playClip = useCallback(
+    (idx: number) => {
+      if (!filtered.length) return;
+      const ts = filtered[idx].timestamp_sec;
+      const start = Math.max(0, ts - secondsBefore);
+      const duration = secondsBefore + secondsAfter;
+      const onEnd = () => {
+        const nextIdx = idx + 1;
+        if (repeatMode) {
+          // Loop same clip.
+          playClip(idx);
+        } else if (nextIdx < filtered.length) {
+          // Advance to next filtered action.
+          playClip(nextIdx);
+        }
+        // At last action with no repeat — stop (video is already paused by timer).
+      };
+      onPlayClip(start, duration, onEnd);
     },
-    [filtered, onSeek]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtered, secondsBefore, secondsAfter, repeatMode, onPlayClip]
   );
 
-
+  const handleRowClick = useCallback(
+    (filteredIdx: number) => {
+      // Selecting an action starts clip playback from this filtered row and then
+      // chains through the remaining filtered actions.
+      playClip(filteredIdx);
+    },
+    [playClip]
+  );
   const handleSaveEdit = useCallback(
     (globalIndex: number, patch: Partial<Action>) => {
       actionsControls.update(globalIndex, patch);
@@ -189,7 +217,6 @@ export default function ActionColumn({
             value={filterPlayer}
             onChange={(e) => {
               setFilterPlayer(e.target.value);
-              setActiveRowIndex(null);
             }}
             className="flex-1 min-w-0 bg-background border border-border rounded px-1 py-0.5 text-xs text-foreground"
           >
@@ -204,7 +231,6 @@ export default function ActionColumn({
             value={filterAction}
             onChange={(e) => {
               setFilterAction(e.target.value);
-              setActiveRowIndex(null);
             }}
             className="flex-1 min-w-0 bg-background border border-border rounded px-1 py-0.5 text-xs text-foreground"
           >
@@ -219,51 +245,16 @@ export default function ActionColumn({
 
         {/* Clip controls */}
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">
+          <span className="text-muted-foreground flex-shrink-0">
             {filtered.length === actions.length
               ? `${actions.length} actions`
               : `${filtered.length} / ${actions.length}`}
           </span>
-          <div className="ml-auto flex gap-1">
-            <button
-              onClick={() => {
-                if (activeRowIndex === null || !filtered.length) return;
-                const prevIdx = Math.max(0, activeRowIndex - 1);
-                setActiveRowIndex(prevIdx);
-                const ts = filtered[prevIdx].timestamp_sec;
-                onPlayAt(Math.max(0, ts - BEFORE_OFFSET));
-              }}
-              className="px-2 py-0.5 rounded border border-border text-muted-foreground hover:bg-accent"
-              title="Previous action"
-            >
-              ◀
-            </button>
-            <button
-              onClick={() => {
-                if (activeRowIndex === null || !filtered.length) return;
-                const nextIdx = Math.min(filtered.length - 1, activeRowIndex + 1);
-                setActiveRowIndex(nextIdx);
-                const ts = filtered[nextIdx].timestamp_sec;
-                onPlayAt(Math.max(0, ts - BEFORE_OFFSET));
-              }}
-              className="px-2 py-0.5 rounded border border-border text-muted-foreground hover:bg-accent"
-              title="Next action"
-            >
-              ▶
-            </button>
-            <button
-              onClick={() => setRepeatMode((r) => !r)}
-              className={cn(
-                "px-2 py-0.5 rounded border",
-                repeatMode
-                  ? "border-blue-500 text-blue-400"
-                  : "border-border text-muted-foreground hover:bg-accent"
-              )}
-              title="Toggle repeat clip"
-            >
-              ↺
-            </button>
-          </div>
+
+          <span className="text-muted-foreground flex-shrink-0">
+            clip: −{secondsBefore.toFixed(1)}s / +{secondsAfter.toFixed(1)}s
+          </span>
+
         </div>
 
         {error && (

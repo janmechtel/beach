@@ -106,7 +106,7 @@ export default function ActionRow({
       )}
       onClick={onClick}
       onDoubleClick={onEdit}
-      title="Click to seek · Double-click to edit"
+      title="Click to play clip · Double-click to edit"
     >
       {/* Player color strip */}
       <span
