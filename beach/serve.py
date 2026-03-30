@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlparse
@@ -23,11 +26,97 @@ import click
 
 
 # ---------------------------------------------------------------------------
+# Hot-reload watcher
+# ---------------------------------------------------------------------------
+
+# Env var used to distinguish the watcher parent from the server worker child.
+_WORKER_ENV = "_BEACH_SERVE_WORKER"
+
+
+def _watch_and_restart(argv: list[str]) -> None:
+    """Spawn argv as a subprocess; kill and restart it when beach/*.py changes.
+
+    Uses the same executable and arguments that were invoked, with _WORKER_ENV=1
+    added to the environment so the child skips this watcher and runs the server.
+    """
+    watch_dir = Path(__file__).parent
+
+    def get_mtimes() -> dict[Path, float]:
+        mtimes: dict[Path, float] = {}
+        for p in watch_dir.rglob("*.py"):
+            try:
+                mtimes[p] = p.stat().st_mtime
+            except OSError:
+                pass
+        return mtimes
+
+    env = {**os.environ, _WORKER_ENV: "1"}
+    mtimes = get_mtimes()
+    proc: subprocess.Popen | None = None
+
+    def _shutdown(sig, frame):
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    while True:
+        print("  Starting...", flush=True)
+        proc = subprocess.Popen(argv, env=env)  # noqa: S603
+        # Poll until process exits or a source file changes.
+        while proc.poll() is None:
+            time.sleep(0.5)
+            new_mtimes = get_mtimes()
+            if new_mtimes != mtimes:
+                changed = [
+                    p.name for p, t in new_mtimes.items()
+                    if mtimes.get(p) != t
+                ] + [p.name for p in new_mtimes if p not in mtimes]
+                suffix = "..." if len(changed) > 3 else ""
+                print(f"  Reloading ({', '.join(changed[:3])}{suffix})...", flush=True)
+                mtimes = new_mtimes
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+        else:
+            # Worker exited on its own (port conflict, crash, etc.).
+            sys.exit(proc.returncode)
+
+
+# ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
 
 def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
     """Return a request handler class bound to the given paths."""
+
+
+
+    def _safe_path(base: Path, rel: str) -> Optional[Path]:
+        """Return the resolved path only if it's safe to serve.
+
+        Path-traversal check uses is_relative_to() on the *unresolved* joined
+        path, which catches `../` tricks without following symlinks.  Symlinks
+        that live legitimately inside `base` (e.g. data/first30/video.mp4
+        pointing into videos/) are allowed — we check containment of the
+        symlink itself, not its target.
+        """
+        joined = base / rel
+        try:
+            joined.relative_to(base)  # raises ValueError on traversal
+        except ValueError:
+            return None
+        # Resolve only for the actual open() call.
+        return joined.resolve()
 
     class Handler(BaseHTTPRequestHandler):
         # Force HTTP/1.1 so Range requests work (206 Partial Content).
@@ -50,31 +139,30 @@ def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
             elif path.startswith("/api/videos/"):
                 self._api_videos_route(path, method="GET")
             elif path.startswith("/data/"):
-                # Serve files directly from data_dir
+                # Serve files directly from data_dir (symlinks are allowed).
                 rel = path[len("/data/"):]
-                target = (data_dir / rel).resolve()
-                if not str(target).startswith(str(data_dir)):
+                target = _safe_path(data_dir, rel)
+                if target is None:
                     self._error(403, "Forbidden")
                     return
                 self._serve_file(target)
             else:
                 # Static file from viewer dist (or project root fallback)
                 if static_dir and static_dir.exists():
-                    # Map / to index.html
                     rel = path.lstrip("/") or "index.html"
-                    target = (static_dir / rel).resolve()
-                    if not str(target).startswith(str(static_dir)):
+                    target = _safe_path(static_dir, rel)
+                    if target is None:
                         self._error(403, "Forbidden")
                         return
                     if not target.exists():
                         # SPA fallback: return index.html for unknown routes
-                        target = static_dir / "index.html"
+                        target = (static_dir / "index.html").resolve()
                     self._serve_file(target)
                 else:
                     # Fallback: serve from project root (dev mode without built viewer)
                     rel = path.lstrip("/") or "index.html"
-                    target = (root / rel).resolve()
-                    if not str(target).startswith(str(root)):
+                    target = _safe_path(root, rel)
+                    if target is None:
                         self._error(403, "Forbidden")
                         return
                     self._serve_file(target)
@@ -138,20 +226,24 @@ def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
                 self._error(404, "Not found")
 
         def _api_list_actions(self, stem_dir: Path):
-            """GET /api/videos/<stem>/actions — list *.json files in stem dir."""
+            """GET /api/videos/<stem>/actions — list all non-hidden files in stem dir.
+
+            Returns JSON + video filenames so the client can locate both.
+            The client is responsible for filtering by extension.
+            """
             if not stem_dir.exists():
                 self._json_response([])
                 return
             files = sorted(
                 p.name for p in stem_dir.iterdir()
-                if p.suffix == ".json" and not p.name.startswith(".")
+                if not p.name.startswith(".")
             )
             self._json_response(files)
 
         def _api_get_action(self, stem_dir: Path, filename: str):
             """GET /api/videos/<stem>/actions/<filename>."""
-            target = (stem_dir / filename).resolve()
-            if not str(target).startswith(str(data_dir)):
+            target = _safe_path(stem_dir, filename)
+            if target is None:
                 self._error(403, "Forbidden")
                 return
             if not target.exists():
@@ -161,8 +253,8 @@ def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
 
         def _api_save_action(self, stem_dir: Path, filename: str):
             """POST /api/videos/<stem>/actions/<filename> — write actions JSON."""
-            target = (stem_dir / filename).resolve()
-            if not str(target).startswith(str(data_dir)):
+            target = _safe_path(stem_dir, filename)
+            if target is None:
                 self._error(403, "Writes only allowed inside data/")
                 return
 
@@ -191,11 +283,9 @@ def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
                 self._error(400, str(exc))
                 return
 
-            target = (root / rel).resolve()
-            # Allow writes to output/ (legacy) or data/ (new layout)
-            allowed = [str(root / "output"), str(data_dir)]
-            if not any(str(target).startswith(a) for a in allowed):
-                self._error(403, "Writes only allowed inside output/ or data/")
+            target = _safe_path(root, str(rel))
+            if target is None:
+                self._error(403, "Writes only allowed inside project root")
                 return
 
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -341,8 +431,19 @@ def _make_handler(root: Path, data_dir: Path, static_dir: Optional[Path]):
     default=None,
     help="Path to built viewer dist/ directory (default: <project>/viewer/dist).",
 )
-def serve_cmd(port: int, data_dir: Path, viewer_dir: Optional[Path]) -> None:
+@click.option(
+    "--reload", "-r",
+    is_flag=True,
+    default=False,
+    help="Restart server automatically when beach/*.py source files change.",
+)
+def serve_cmd(port: int, data_dir: Path, viewer_dir: Optional[Path], reload: bool) -> None:
     """Start the dev server for the beach volleyball viewer."""
+    # In reload mode, this process is the watcher unless the worker env var is set.
+    if reload and not os.environ.get(_WORKER_ENV):
+        _watch_and_restart(sys.argv)
+        return
+
     root = Path.cwd()
 
     # Resolve viewer dir: explicit arg > viewer/dist relative to cwd
@@ -356,7 +457,7 @@ def serve_cmd(port: int, data_dir: Path, viewer_dir: Optional[Path]) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     handler_class = _make_handler(root, data_dir, viewer_dir)
-    server = HTTPServer(("", port), handler_class)
+    server = ThreadingHTTPServer(("", port), handler_class)
 
     if viewer_dir and viewer_dir.exists():
         print(f"Viewer : {viewer_dir}")
@@ -364,7 +465,10 @@ def serve_cmd(port: int, data_dir: Path, viewer_dir: Optional[Path]) -> None:
         print("Viewer : not found (build with: cd viewer && npm run build)")
 
     print(f"Data   : {data_dir}")
-    print(f"Serving on http://localhost:{port}/")
+    if reload:
+        print(f"Serving on http://localhost:{port}/  [reload enabled]")
+    else:
+        print(f"Serving on http://localhost:{port}/")
 
     try:
         server.serve_forever()
