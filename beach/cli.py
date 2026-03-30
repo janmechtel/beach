@@ -2,9 +2,14 @@
 
 Commands
 --------
-beach detect  — Run cut detection only; print/save JSON.
-beach split   — Split a video given an existing metadata.json.
-beach process — Detect cuts *and* split in one step (most common usage).
+beach detect    — Run cut detection only; print/save JSON.
+beach split     — Split a video given an existing metadata.json.
+beach process   — Detect cuts *and* split in one step (most common usage).
+beach annotate  — Pass 1: YOLO person + ball detection.
+beach identify  — Pass 2: Player identification via Gemini.
+beach analyze   — Pass 3: Action extraction via Gemini.
+beach compare   — Compare candidate action JSON against ground truth.
+beach serve     — Start the dev server for the viewer.
 
 All commands write structured logging to stderr and actionable output
 (JSON, file paths) to stdout so they compose cleanly with shell pipelines.
@@ -28,6 +33,13 @@ from beach.cut_detect import (
 )
 from beach.models import MatchMetadata
 from beach.split import split_video, write_metadata
+
+# Subcommand modules — imported here so cli.add_command works.
+from beach.annotate import annotate_cmd
+from beach.identify import identify_cmd
+from beach.analyze import analyze_cmd
+from beach.compare import compare_cmd
+from beach.serve import serve_cmd
 
 # ---------------------------------------------------------------------------
 # Logging setup — INFO to stderr by default; DEBUG when --verbose
@@ -103,6 +115,13 @@ _verbose_option = click.option(
 def cli() -> None:
     """Beach volleyball video analysis toolkit."""
 
+
+# Wire in subcommands from their respective modules.
+cli.add_command(annotate_cmd)
+cli.add_command(identify_cmd)
+cli.add_command(analyze_cmd)
+cli.add_command(compare_cmd)
+cli.add_command(serve_cmd)
 
 # ---------------------------------------------------------------------------
 # beach detect

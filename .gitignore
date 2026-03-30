@@ -17,10 +17,18 @@ env/
 # uv
 .uv/
 
-# Project data — large output clips are not committed; demo files are exceptions
+# Raw videos — no exceptions; all video files stay local
+videos/
+*.mp4
+*.mov
+*.avi
+
+# YOLO model weights
+models/
+
+# Pipeline outputs — large files, not committed
 data/*
 !data/.gitkeep
-!output/.gitkeep
 
 # IDE
 .idea/
@@ -37,18 +45,12 @@ Thumbs.db
 .coverage
 htmlcov/
 
-
 # Secrets / local config
 .env
-
-# Raw video — no exceptions; all video files stay local
-*.mp4
-*.mov
-*.avi
 
 # Local Netlify folder
 .netlify
 
-# Generated data directories — large files, not committed
-chunks/
-output/
+# Viewer build output and node modules
+viewer/dist/
+viewer/node_modules/

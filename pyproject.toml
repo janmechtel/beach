@@ -1,7 +1,7 @@
 [project]
 name = "beach"
 version = "0.1.0"
-description = "Beach volleyball video analysis — cut detection and clip splitting"
+description = "Beach volleyball video analysis — cut detection, clip splitting, annotation, player identification, and action extraction"
 requires-python = ">=3.11"
 dependencies = [
     "opencv-python-headless>=4.9",
@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2.6",
     "google-genai>=1.69.0",
     "ultralytics>=8.3",
+    "numpy>=1.26",
+    "scipy>=1.11",
 ]
 
 [project.scripts]

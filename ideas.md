@@ -27,3 +27,12 @@ ealier = edit ground truth data
  - should select one video then load ground truth data + the generated runs?
 
 - not sure if video/ is still used anywhere
+
+
+- Fastvolleyball track the ball + separate rallies + split files
+
+
+How is the player detection done vs. how it's done in my script?
+
+How can we make the player detection more robust?
+
