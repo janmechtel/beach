@@ -112,11 +112,18 @@
   .video-panel {
     flex: 1;
     display: flex;
+    flex-direction: column;
+    background: #060810;
+    min-width: 0;
+  }
+
+  .video-wrap {
+    flex: 1;
+    display: flex;
     align-items: center;
     justify-content: center;
-    background: #060810;
-    padding: 20px;
-    min-width: 0;
+    padding: 16px 16px 0;
+    min-height: 0;
   }
 
   video {
@@ -124,6 +131,63 @@
     max-height: 100%;
     border-radius: 6px;
     box-shadow: 0 4px 32px rgba(0,0,0,0.6);
+    display: block;
+  }
+
+  /* ── Custom always-visible video controls ── */
+  .video-controls {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: #0d1020;
+    border-top: 1px solid #1e2235;
+  }
+
+  .vc-play {
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    border: 1px solid #2d3148;
+    background: #1a1d27;
+    color: #cbd5e1;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.12s, color 0.12s;
+  }
+  .vc-play:hover { background: #1e2a45; color: #93c5fd; border-color: #3b82f6; }
+
+  .vc-time {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: #94a3b8;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 90px;
+  }
+
+  .vc-seek {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #2d3148;
+    outline: none;
+    cursor: pointer;
+  }
+  .vc-seek::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #3b82f6;
+    cursor: pointer;
+  }
+  .vc-seek::-moz-range-thumb {
+    width: 12px; height: 12px;
+    border: none; border-radius: 50%;
+    background: #3b82f6; cursor: pointer;
   }
 
   /* ── Column container ── */
@@ -426,6 +490,34 @@
     font-size: 12px;
     line-height: 1.5;
   }
+
+  /* ── Repeat toggle button ── */
+  .repeat-btn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 5px 10px;
+    border-radius: 4px;
+    border: 1px solid #2d3148;
+    background: #0f1117;
+    color: #475569;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .repeat-btn:hover { background: #1e2235; color: #94a3b8; border-color: #3b4060; }
+  .repeat-btn.active {
+    background: #1d3a5f;
+    color: #93c5fd;
+    border-color: #3b82f6;
+  }
+  .repeat-btn.active:hover { background: #1e4a7a; }
 </style>
 </head>
 <body>
@@ -449,13 +541,30 @@
     <input id="beforeOffsetSlider" type="range" min="0" max="5" step="0.5" value="0">
     <span class="speed-val" id="beforeOffsetVal">0.0s</span>
   </div>
+  <button id="repeatBtn" class="repeat-btn" title="Loop current action (before + after window)">
+    <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4h9a4 4 0 0 1 0 8H4"/>
+      <polyline points="7 7 4 4 7 1"/>
+      <polyline points="4 13 7 16 4 19"/>
+    </svg>
+    Repeat
+  </button>
 </header>
 
 <div class="main">
   <div class="video-panel">
-    <video id="video" controls preload="auto">
-      <source src="data/first30.mp4" type="video/mp4">
-    </video>
+    <div class="video-wrap">
+      <video id="video" preload="auto">
+        <source src="data/first30.mp4" type="video/mp4">
+      </video>
+    </div>
+    <div class="video-controls">
+      <button class="vc-play" id="vcPlay" title="Play / Pause">
+        <svg id="vcPlayIcon" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
+      </button>
+      <span class="vc-time" id="vcTime">0:00.0 / 0:00.0</span>
+      <input class="vc-seek" id="vcSeek" type="range" min="0" max="1" step="0.001" value="0">
+    </div>
   </div>
   <div class="columns-container" id="columnsContainer"></div>
 </div>
@@ -496,6 +605,10 @@ function playerLabel(id) {
 // ── Global state ─────────────────────────────────────────────────────────────
 
 const video       = document.getElementById('video');
+const vcPlay      = document.getElementById('vcPlay');
+const vcPlayIcon  = document.getElementById('vcPlayIcon');
+const vcTime      = document.getElementById('vcTime');
+const vcSeek      = document.getElementById('vcSeek');
 const statusEl    = document.getElementById('status');
 const speedSlider = document.getElementById('speedSlider');
 const speedValEl  = document.getElementById('speedVal');
@@ -525,12 +638,71 @@ beforeOffsetSlider.addEventListener('input', () => {
   beforeOffset = parseFloat(beforeOffsetSlider.value);
   beforeOffsetValEl.textContent = beforeOffset.toFixed(1) + 's';
 });
+const repeatBtn = document.getElementById('repeatBtn');
+let repeatMode  = false;
+
+repeatBtn.addEventListener('click', () => {
+  repeatMode = !repeatMode;
+  repeatBtn.classList.toggle('active', repeatMode);
+});
+
+// ── Custom always-visible video controls ──────────────────────────────────────
+
+const PLAY_ICON  = '<polygon points="2,1 11,6 2,11"/>';
+const PAUSE_ICON = '<rect x="2" y="1" width="3" height="10"/><rect x="7" y="1" width="3" height="10"/>';
+
+function fmtDuration(sec) {
+  if (!isFinite(sec)) return '–';
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1).padStart(4, '0');
+  return m > 0 ? `${m}:${s}` : `0:${s}`;
+}
+
+function updateControlBar() {
+  const cur = video.currentTime;
+  const dur = video.duration || 0;
+  vcTime.textContent = `${fmtDuration(cur)} / ${fmtDuration(dur)}`;
+  vcPlayIcon.innerHTML = video.paused ? PLAY_ICON : PAUSE_ICON;
+  if (dur > 0) {
+    vcSeek.max   = dur;
+    vcSeek.value = cur;
+    const pct = (cur / dur * 100).toFixed(2);
+    vcSeek.style.background =
+      `linear-gradient(to right, #3b82f6 ${pct}%, #2d3148 ${pct}%)`;
+  }
+}
+
+vcPlay.addEventListener('click', () => { video.paused ? video.play() : video.pause(); });
+
+// Space bar toggles play/pause unless focus is on an interactive input element
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space') return;
+  const tag = document.activeElement?.tagName ?? '';
+  if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(tag)) return;
+  e.preventDefault();
+  video.paused ? video.play() : video.pause();
+});
+
+// While dragging the seek thumb, update position but don't let timeupdate fight it
+let vcSeeking = false;
+vcSeek.addEventListener('mousedown', () => { vcSeeking = true; });
+vcSeek.addEventListener('touchstart', () => { vcSeeking = true; }, { passive: true });
+vcSeek.addEventListener('input', () => { video.currentTime = parseFloat(vcSeek.value); });
+vcSeek.addEventListener('mouseup',   () => { vcSeeking = false; });
+vcSeek.addEventListener('touchend',  () => { vcSeeking = false; });
+
+video.addEventListener('play',           updateControlBar);
+video.addEventListener('pause',          updateControlBar);
+video.addEventListener('durationchange', updateControlBar);
+video.addEventListener('loadedmetadata', updateControlBar);
+// timeupdate is also wired below in the global listener — handled there
 
 // The column whose row was last clicked owns auto-advance for the current clip
 let activeColumn = null;
 
 // Known file list populated during init
-let availableFiles = [];
+let availableFiles  = [];
+let availableVideos = [];  // populated in init(); sorted longest-stem-first
 
 // All live columns
 const columns = [];
@@ -849,6 +1021,17 @@ function createColumn(initialFile) {
     resetFilters();
     listEl.innerHTML = '';
     countEl.textContent = '';
+    // Auto-switch video: find the .mp4 whose stem is a prefix of this JSON's name.
+    // availableVideos is sorted longest-first so more-specific stems win.
+    const jsonName = jsonPath.split('/').pop().replace('.json', '');
+    const matchedVideo = availableVideos.find(v => {
+      const stem = v.split('/').pop().replace('.mp4', '');
+      return jsonName.startsWith(stem + '_') || jsonName === stem;
+    });
+    if (matchedVideo) {
+      const resolved = new URL(matchedVideo, location.href).href;
+      if (video.src !== resolved) { video.src = matchedVideo; video.load(); }
+    }
 
     try {
       const r = await fetch(jsonPath);
@@ -925,26 +1108,34 @@ function createColumn(initialFile) {
   function syncTime(t) {
     if (!state.rows.length) return;
 
-    // Auto-advance: when a filter is active and this column owns playback,
-    // jump to the next filtered row once `nextDelay` seconds have elapsed
-    // past the clicked row's timestamp.
+    // Auto-advance / repeat: fires when this column owns playback and enough
+    // time has elapsed past the clicked action's timestamp.
+    // Condition: filter active (clip-by-clip mode) OR repeat mode is on.
     const filterActive = filterAction.value !== '' || filterPlayer.value !== '';
-    if (filterActive && activeColumn === col && state.activeRowIdx !== null && !video.paused) {
+    if ((filterActive || repeatMode) && activeColumn === col &&
+        state.activeRowIdx !== null && !video.paused) {
       const activeTs = state.rows[state.activeRowIdx]?.ts;
       if (activeTs !== undefined && t >= activeTs + nextDelay) {
-        const next = state.activeRowIdx + 1;
-        if (next < state.rows.length) {
-          state.activeRowIdx = next;
-          setActive(next);
-          const nextTs = state.rows[next].ts;
-          state.rows[next].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        if (repeatMode) {
+          // Loop back to the start of the same clip's before-window
           video.addEventListener('seeked', () => video.play(), { once: true });
-          video.currentTime = Math.max(0, nextTs - beforeOffset);
+          video.currentTime = Math.max(0, activeTs - beforeOffset);
         } else {
-          // Reached end of filtered list — pause and reset
-          video.pause();
-          state.activeRowIdx = null;
-          activeColumn = null;
+          // Advance to next filtered action
+          const next = state.activeRowIdx + 1;
+          if (next < state.rows.length) {
+            state.activeRowIdx = next;
+            setActive(next);
+            const nextTs = state.rows[next].ts;
+            state.rows[next].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            video.addEventListener('seeked', () => video.play(), { once: true });
+            video.currentTime = Math.max(0, nextTs - beforeOffset);
+          } else {
+            // Reached end of filtered list — pause and reset
+            video.pause();
+            state.activeRowIdx = null;
+            activeColumn = null;
+          }
         }
         return;
       }
@@ -1005,6 +1196,7 @@ addColBtn.addEventListener('click', () => {
 
 video.addEventListener('timeupdate', () => {
   const t = video.currentTime;
+  if (!vcSeeking) updateControlBar();
   columns.forEach(col => col.syncTime(t));
 });
 
@@ -1022,27 +1214,43 @@ statusObserver.observe(container, { childList: true });
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init() {
-  // Scan output/ directory for first*.json files; sort = chronological
+  // Scan for available videos across known directories.
+  // Sort longest-stem-first so "foo_1min" beats "foo" in prefix matching.
+  for (const dir of ['data/', 'chunks/']) {
+    try {
+      const r = await fetch(dir);
+      if (!r.ok) continue;
+      const html = await r.text();
+      const re = /href="([^"]+\.mp4)"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) availableVideos.push(dir + m[1]);
+    } catch (_) {}  // directory listing not available -- skip
+  }
+  availableVideos.sort((a, b) => b.length - a.length);
+
+  // Scan output/ for any *.json files.
   try {
     const r = await fetch('output/');
     if (r.ok) {
       const html = await r.text();
-      const re = /href="(first[^"]+\.json)"/g;
+      const re = /href="([^"]+\.json)"/g;
       let m;
       while ((m = re.exec(html)) !== null) availableFiles.push('output/' + m[1]);
       availableFiles.sort();
     }
-  } catch (_) { /* fall through */ }
+  } catch (_) {}  // fall through
 
   if (!availableFiles.length) {
     availableFiles = ['output/actions.json', 'actions.json'];
   }
 
-  // Column 1: always the manual reference; column 2: most recent file
+  // Column 1: manual reference if present, else first file.
+  // Column 2: most recent file -- video switches automatically when JSON loads.
   const MANUAL = 'output/first30_Manual.json';
-  const latest = availableFiles[availableFiles.length - 1] ?? MANUAL;
-  addColumn(MANUAL);
-  addColumn(latest);
+  const col1 = availableFiles.includes(MANUAL) ? MANUAL : (availableFiles[0] ?? MANUAL);
+  const col2 = availableFiles[availableFiles.length - 1] ?? col1;
+  addColumn(col1);
+  addColumn(col2);
 }
 
 init();

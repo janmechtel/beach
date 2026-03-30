@@ -30,7 +30,6 @@ import argparse
 from pathlib import Path
 
 
-DEFAULT_REF = Path(__file__).parent / "output" / "first30_Manual.json"
 DEFAULT_TOL = 2.0   # seconds — small deviations are acceptable
 
 
@@ -193,8 +192,8 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         type=Path,
-        default=DEFAULT_REF,
-        help=f"Path to the reference JSON (default: {DEFAULT_REF})",
+        required=True,
+        help="Path to the reference JSON file.",
     )
     parser.add_argument(
         "--tol",
