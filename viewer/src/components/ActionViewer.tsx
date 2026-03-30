@@ -53,7 +53,7 @@ export default function ActionViewer({ stem }: Props) {
   const [columns, setColumns] = useState<ColumnDef[]>([]);
 
   const [playerState, playerControls] = useVideoPlayer();
-  const { videoRef, seekTo, togglePlay, setPlaybackRate } = playerControls;
+  const { setVideoEl, seekTo, seekAndPlay, togglePlay, setPlaybackRate } = playerControls;
 
   // Reload file list when stem changes
   useEffect(() => {
@@ -84,16 +84,8 @@ export default function ActionViewer({ stem }: Props) {
 
   // Seek + play at a given timestamp (used by Before-clip controls)
   const handlePlayAt = useCallback(
-    (t: number) => {
-      // Attach seeked → play BEFORE setting currentTime (race condition fix per memory).
-      const video = videoRef.current;
-      if (!video) return;
-      video.addEventListener("seeked", () => video.play().catch(() => {}), {
-        once: true,
-      });
-      video.currentTime = t;
-    },
-    [videoRef]
+    (t: number) => seekAndPlay(t),
+    [seekAndPlay]
   );
 
   return (
@@ -103,7 +95,7 @@ export default function ActionViewer({ stem }: Props) {
         {/* Left: video player */}
         <div className="flex flex-col" style={{ width: "40%", minWidth: 300 }}>
           <VideoPlayer
-            videoRef={videoRef}
+            setVideoEl={setVideoEl}
             src={videoSrc}
             state={playerState}
             onTogglePlay={togglePlay}

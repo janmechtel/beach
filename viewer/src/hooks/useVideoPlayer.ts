@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 export interface VideoPlayerState {
   currentTime: number;
@@ -8,8 +8,11 @@ export interface VideoPlayerState {
 }
 
 export interface VideoPlayerControls {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
+  /** Ref callback — pass directly to <video ref={...}>. */
+  setVideoEl: (el: HTMLVideoElement | null) => void;
   seekTo: (t: number) => void;
+  /** Seek to t, then play once the seek completes. */
+  seekAndPlay: (t: number) => void;
   play: () => void;
   pause: () => void;
   togglePlay: () => void;
@@ -18,12 +21,18 @@ export interface VideoPlayerControls {
 
 /** Manages a shared video element. Returns live state and imperative controls.
  *
- * seekTo attaches a `seeked` listener BEFORE setting currentTime to avoid
- * the race condition where seeked fires before the listener is registered
- * (documented in memory: "attach seeked listener before currentTime").
+ * Uses a ref callback (`setVideoEl`) instead of useRef so that event listeners
+ * are attached exactly when the <video> element mounts and removed when it
+ * unmounts. A plain useRef + useEffect([]) misses the element because it is
+ * conditionally rendered (src guard) and videoRef.current is null at mount.
+ *
+ * Handler functions are stored in a stable ref so that add/removeEventListener
+ * always operate on the exact same function objects.
  */
 export function useVideoPlayer(): [VideoPlayerState, VideoPlayerControls] {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Internal mutable ref so imperative controls always reach the live element.
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
+
   const [state, setState] = useState<VideoPlayerState>({
     currentTime: 0,
     duration: 0,
@@ -31,69 +40,96 @@ export function useVideoPlayer(): [VideoPlayerState, VideoPlayerControls] {
     playbackRate: 1,
   });
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+  // Stable event handler refs — identity must not change across renders so that
+  // removeEventListener can match the same function that was passed to add.
+  const handlers = useRef({
+    onTimeUpdate(this: HTMLVideoElement) {
+      setState((s) => ({ ...s, currentTime: this.currentTime }));
+    },
+    onDurationChange(this: HTMLVideoElement) {
+      setState((s) => ({ ...s, duration: this.duration || 0 }));
+    },
+    onPlay() {
+      setState((s) => ({ ...s, paused: false }));
+    },
+    onPause() {
+      setState((s) => ({ ...s, paused: true }));
+    },
+    onRateChange(this: HTMLVideoElement) {
+      setState((s) => ({ ...s, playbackRate: this.playbackRate }));
+    },
+  });
 
-    const onTimeUpdate = () =>
-      setState((s) => ({ ...s, currentTime: video.currentTime }));
-    const onDurationChange = () =>
-      setState((s) => ({ ...s, duration: video.duration || 0 }));
-    const onPlay = () => setState((s) => ({ ...s, paused: false }));
-    const onPause = () => setState((s) => ({ ...s, paused: true }));
-    const onRateChange = () =>
-      setState((s) => ({ ...s, playbackRate: video.playbackRate }));
-
-    video.addEventListener("timeupdate", onTimeUpdate);
-    video.addEventListener("durationchange", onDurationChange);
-    video.addEventListener("play", onPlay);
-    video.addEventListener("pause", onPause);
-    video.addEventListener("ratechange", onRateChange);
-
-    return () => {
-      video.removeEventListener("timeupdate", onTimeUpdate);
-      video.removeEventListener("durationchange", onDurationChange);
-      video.removeEventListener("play", onPlay);
-      video.removeEventListener("pause", onPause);
-      video.removeEventListener("ratechange", onRateChange);
-    };
-  }, []);
+  // Ref callback: called by React with the element on mount and null on unmount.
+  // This is the only reliable way to attach listeners to a conditionally-rendered
+  // element — useEffect([]) runs before the element exists in the DOM.
+  const setVideoEl = useCallback((el: HTMLVideoElement | null) => {
+    const prev = videoElRef.current;
+    const h = handlers.current;
+    if (prev) {
+      prev.removeEventListener("timeupdate", h.onTimeUpdate);
+      prev.removeEventListener("durationchange", h.onDurationChange);
+      prev.removeEventListener("play", h.onPlay);
+      prev.removeEventListener("pause", h.onPause);
+      prev.removeEventListener("ratechange", h.onRateChange);
+    }
+    videoElRef.current = el;
+    if (el) {
+      el.addEventListener("timeupdate", h.onTimeUpdate);
+      el.addEventListener("durationchange", h.onDurationChange);
+      el.addEventListener("play", h.onPlay);
+      el.addEventListener("pause", h.onPause);
+      el.addEventListener("ratechange", h.onRateChange);
+      // Sync initial state in case the element already has data (e.g. src swap).
+      setState({
+        currentTime: el.currentTime,
+        duration: el.duration || 0,
+        paused: el.paused,
+        playbackRate: el.playbackRate,
+      });
+    } else {
+      setState({ currentTime: 0, duration: 0, paused: true, playbackRate: 1 });
+    }
+  }, []); // stable — never recreated, so <video ref={setVideoEl}> won't re-fire
 
   const seekTo = useCallback((t: number) => {
-    const video = videoRef.current;
+    const video = videoElRef.current;
     if (!video) return;
-    // Attach seeked listener FIRST, then set currentTime (avoids race).
-    video.addEventListener(
-      "seeked",
-      () => {
-        // Caller decides whether to play after seek; this just notifies.
-      },
-      { once: true }
-    );
+    video.currentTime = t;
+  }, []);
+
+  // Seek to t, then play once the seek completes (avoids the race where play()
+  // is called before the browser has moved to the new position).
+  const seekAndPlay = useCallback((t: number) => {
+    const video = videoElRef.current;
+    if (!video) return;
+    video.addEventListener("seeked", () => video.play().catch(() => {}), {
+      once: true,
+    });
     video.currentTime = t;
   }, []);
 
   const play = useCallback(() => {
-    videoRef.current?.play().catch(() => {});
+    videoElRef.current?.play().catch(() => {});
   }, []);
 
   const pause = useCallback(() => {
-    videoRef.current?.pause();
+    videoElRef.current?.pause();
   }, []);
 
   const togglePlay = useCallback(() => {
-    const video = videoRef.current;
+    const video = videoElRef.current;
     if (!video) return;
     if (video.paused) video.play().catch(() => {});
     else video.pause();
   }, []);
 
   const setPlaybackRate = useCallback((rate: number) => {
-    if (videoRef.current) videoRef.current.playbackRate = rate;
+    if (videoElRef.current) videoElRef.current.playbackRate = rate;
   }, []);
 
   return [
     state,
-    { videoRef, seekTo, play, pause, togglePlay, setPlaybackRate },
+    { setVideoEl, seekTo, seekAndPlay, play, pause, togglePlay, setPlaybackRate },
   ];
 }

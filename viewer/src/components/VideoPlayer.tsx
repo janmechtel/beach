@@ -3,7 +3,7 @@ import type { VideoPlayerControls, VideoPlayerState } from "../hooks/useVideoPla
 import { fmtTime } from "../lib/utils";
 
 interface Props {
-  videoRef: VideoPlayerControls["videoRef"];
+  setVideoEl: VideoPlayerControls["setVideoEl"];
   src: string;
   state: VideoPlayerState;
   onTogglePlay: () => void;
@@ -14,7 +14,7 @@ interface Props {
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
 export default function VideoPlayer({
-  videoRef,
+  setVideoEl,
   src,
   state,
   onTogglePlay,
@@ -56,7 +56,7 @@ export default function VideoPlayer({
       <div className="flex items-center justify-center bg-black min-h-0 flex-1">
         {src ? (
           <video
-            ref={videoRef}
+            ref={setVideoEl}
             src={src}
             className="max-w-full max-h-full"
             onClick={onTogglePlay}
