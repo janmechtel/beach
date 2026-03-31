@@ -428,15 +428,47 @@ def _resolve_conflicts(track_map: dict[str, str]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # No-LLM bootstrap
 # ---------------------------------------------------------------------------
+# GT-derived HSV colour templates for no-LLM seeding.
+# These are the cluster centres from the manually annotated clip.
+# Used by _seed_from_detections to assign players at boot time instead of
+# the catastrophically wrong left-to-right order.
+_SEED_COLOR_TEMPLATES: dict[str, list[float]] = {
+    "P1": [85.0,  34.0,  95.0],  # Denny    — dark shirt, warm low-sat
+    "P2": [78.0,  28.0, 105.0],  # O-Love   — grey, lowest sat, brightest
+    "P3": [100.0, 114.0, 118.0], # Ibu 800  — blue, high sat, clearly distinct
+    "P4": [68.0,  50.0,  88.0],  # Bjirk    — dark tank, moderate sat
+}
+
+
+def _nms_iou(a: dict, b: dict) -> float:
+    """IoU between two person detection dicts (each has x1,y1,x2,y2 fields)."""
+    ix1 = max(a["x1"], b["x1"])
+    iy1 = max(a["y1"], b["y1"])
+    ix2 = min(a["x2"], b["x2"])
+    iy2 = min(a["y2"], b["y2"])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_a = max(0.0, a["x2"] - a["x1"]) * max(0.0, a["y2"] - a["y1"])
+    area_b = max(0.0, b["x2"] - b["x1"]) * max(0.0, b["y2"] - b["y1"])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 def _seed_from_detections(
     frames: list[dict],
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, list[float]]]:
     """Seed player slots from the earliest full-court frame; no LLM required.
 
-    Finds the first frame with EXACT_PLAYER_COUNT persons and assigns P1..P4
-    left-to-right by cx.  Then runs a lightweight rolling tracker for
-    COLOR_SEED_FRAMES frames to build per-player colour references from the
-    torso HSV already stored in the detections JSON.
+    Uses Hungarian assignment on HSV colour-template distance to assign
+    P1..P4 to the detections in the seed frame.  This replaces the old
+    left-to-right ordering which was catastrophically wrong whenever a player
+    was off-screen or the court was rotated relative to expectation.
+
+    Falls back to left-to-right if no detection has colour data (e.g. legacy
+    detections JSON without color_hsv fields).
+
+    Then runs a lightweight rolling tracker for COLOR_SEED_FRAMES frames to
+    build per-player colour references from the torso HSV stored in the
+    detections JSON.
 
     Returns:
         player_pos       -- initial rolling positions {pid: np.array([cx, cy])}
@@ -446,33 +478,104 @@ def _seed_from_detections(
     player_pos: dict[str, np.ndarray] = {}
     seed_fi = -1
 
+    # IoU threshold for suppressing duplicate detections in the seed frame.
+    # ByteTrack occasionally fires two IDs on the same person (observed IoU≈0.55).
+    # A seed frame with such duplicates assigns a real player slot to a ghost,
+    # poisoning the rolling tracker for the entire clip.
+    SEED_NMS_IOU = 0.3
+
     for frame in frames:
         persons = frame["persons"]
-        if len(persons) >= EXACT_PLAYER_COUNT:
-            sorted_p = sorted(persons, key=lambda p: p["cx"])[:EXACT_PLAYER_COUNT]
+        if len(persons) < EXACT_PLAYER_COUNT:
+            continue
+        candidates = persons[:EXACT_PLAYER_COUNT]
+        # Prefer the top-4 by confidence if more than 4 detected.
+        if len(persons) > EXACT_PLAYER_COUNT:
+            candidates = sorted(persons, key=lambda p: p.get("conf", 0.0), reverse=True)[:EXACT_PLAYER_COUNT]
+
+        # Skip frames where any two candidates overlap significantly — indicates
+        # a duplicate detection (same person detected twice).  Such frames
+        # produce ghost players that steal a player slot from the real roster.
+        has_overlap = any(
+            _nms_iou(candidates[i], candidates[j]) > SEED_NMS_IOU
+            for i in range(len(candidates))
+            for j in range(i + 1, len(candidates))
+        )
+        if has_overlap:
+            continue
+
+        # Skip frames where any candidate is partially off-screen (entering/exiting).
+        # cx < 150 or cx > 1770 on a 1920-wide frame means the player is cropped
+        # at the boundary — colour/position are unreliable for that detection.
+        if any(p["cx"] < 150 or p["cx"] > 1770 for p in candidates):
+            continue
+
+        # Use Hungarian colour-template assignment when HSV data is present.
+        has_color = any(p.get("color_hsv") for p in candidates)
+        if has_color:
+            n = len(candidates)
+            cost = np.full((n, len(PLAYER_IDS)), 1e9, dtype=float)
+            for di, p in enumerate(candidates):
+                hsv = p.get("color_hsv")
+                if hsv:
+                    for pi, pid in enumerate(PLAYER_IDS):
+                        cost[di, pi] = _color_distance(hsv, _SEED_COLOR_TEMPLATES[pid])
+            row_ind, col_ind = linear_sum_assignment(cost)
+            assignment: dict[int, str] = {}
+            for ri, ci in zip(row_ind, col_ind):
+                if cost[ri, ci] < 1e8:
+                    assignment[ri] = PLAYER_IDS[ci]
+            player_pos = {
+                pid: np.array([candidates[di]["cx"], candidates[di]["cy"]], dtype=float)
+                for di, pid in assignment.items()
+            }
+        else:
+            # Legacy fallback: sort by cx left-to-right.
+            sorted_p = sorted(candidates, key=lambda p: p["cx"])
             player_pos = {
                 PLAYER_IDS[i]: np.array([p["cx"], p["cy"]], dtype=float)
                 for i, p in enumerate(sorted_p)
             }
-            seed_fi = frame["frame"]
-            print(
-                f"  Seed frame {seed_fi} ({frame['timestamp_sec']:.1f}s): "
-                + ", ".join(
-                    f"{PLAYER_IDS[i]}<-cx{sorted_p[i]['cx']:.0f}"
-                    for i in range(EXACT_PLAYER_COUNT)
-                )
+
+        seed_fi = frame["frame"]
+        print(
+            f"  Seed frame {seed_fi} ({frame['timestamp_sec']:.1f}s): "
+            + ", ".join(
+                f"{pid}<-cx{player_pos[pid][0]:.0f}"
+                for pid in PLAYER_IDS if pid in player_pos
             )
-            break
+        )
+        break
 
     if not player_pos:
         # Partial seed: fewer than EXACT_PLAYER_COUNT players visible simultaneously.
         for frame in frames:
             if frame["persons"]:
-                sorted_p = sorted(frame["persons"], key=lambda p: p["cx"])
-                player_pos = {
-                    PLAYER_IDS[i]: np.array([p["cx"], p["cy"]], dtype=float)
-                    for i, p in enumerate(sorted_p[: len(PLAYER_IDS)])
-                }
+                persons = frame["persons"]
+                has_color = any(p.get("color_hsv") for p in persons)
+                if has_color:
+                    n = min(len(persons), len(PLAYER_IDS))
+                    candidates = persons[:n]
+                    cost = np.full((n, n), 1e9, dtype=float)
+                    pids = PLAYER_IDS[:n]
+                    for di, p in enumerate(candidates):
+                        hsv = p.get("color_hsv")
+                        if hsv:
+                            for pi, pid in enumerate(pids):
+                                cost[di, pi] = _color_distance(hsv, _SEED_COLOR_TEMPLATES[pid])
+                    row_ind, col_ind = linear_sum_assignment(cost)
+                    player_pos = {}
+                    for ri, ci in zip(row_ind, col_ind):
+                        if cost[ri, ci] < 1e8:
+                            player_pos[pids[ci]] = np.array(
+                                [candidates[ri]["cx"], candidates[ri]["cy"]], dtype=float
+                            )
+                else:
+                    sorted_p = sorted(persons, key=lambda p: p["cx"])
+                    player_pos = {
+                        PLAYER_IDS[i]: np.array([p["cx"], p["cy"]], dtype=float)
+                        for i, p in enumerate(sorted_p[: len(PLAYER_IDS)])
+                    }
                 seed_fi = frame["frame"]
                 print(
                     f"  WARNING: no frame with {EXACT_PLAYER_COUNT} persons. "
@@ -549,6 +652,7 @@ def identify_players(
     api_key: str,
     use_llm: bool = True,
     use_embeddings: bool = False,
+    seed_gt_path: Optional[Path] = None,
 ) -> None:
     data = json.loads(detections_path.read_text())
     frames: list[dict] = data["frames"]
@@ -702,8 +806,70 @@ def identify_players(
         # No-LLM path: seed from first full-court frame, build colour refs
         # from the following COLOR_SEED_FRAMES frames.
         # ------------------------------------------------------------------
-        print("No-LLM mode: seeding from first full-court frame …")
-        player_pos, calib_anchor, player_color_ref = _seed_from_detections(frames)
+        if seed_gt_path is not None:
+            # --seed-gt: load the first confirmed GT annotation and use it to
+            # seed player positions directly.  This isolates the tracking quality
+            # from seeding quality — tells us the ceiling of the tracker.
+            print(f"No-LLM mode (seed-gt): seeding from GT annotation {seed_gt_path} …")
+            gt_data = json.loads(seed_gt_path.read_text())
+            confirmed = [
+                a for a in gt_data.get("annotations", [])
+                if a.get("confirmed", True)
+            ]
+            if not confirmed:
+                print("ERROR: no confirmed annotations in GT file.")
+                sys.exit(1)
+            confirmed.sort(key=lambda a: int(a.get("frame", -1)))
+
+            # Use the first annotation that has all 4 players confirmed.
+            # Annotations with fewer players (e.g. one is off-screen) leave slots
+            # unseeded, which the heuristic then fills incorrectly.
+            four_player_anns = [
+                a for a in confirmed
+                if {assign.get("player_id") for assign in a.get("assignments", [])} >= set(PLAYER_IDS)
+            ]
+            if not four_player_anns:
+                print("WARNING: no annotation with all 4 players found; using first confirmed annotation.")
+                four_player_anns = confirmed
+            first_ann = four_player_anns[0]
+            seed_frame_no = first_ann["frame"]
+            n_assigned = len(first_ann.get("assignments", []))
+            print(f"  GT seed frame: {seed_frame_no} ({first_ann.get('timestamp_sec', 0):.1f}s)  ({n_assigned} players)")
+
+            # Resolve detections for the seed frame.
+            det_by_frame: dict[int, dict] = {f["frame"]: f for f in frames}
+            seed_det_frame = det_by_frame.get(seed_frame_no)
+            persons_in_seed: list[dict] = seed_det_frame.get("persons", []) if seed_det_frame else []
+
+            player_pos = {}
+            for assign in first_ann.get("assignments", []):
+                pid = assign.get("player_id")
+                di = assign.get("detection_index")
+                if pid in PLAYER_IDS and isinstance(di, int) and di < len(persons_in_seed):
+                    p = persons_in_seed[di]
+                    player_pos[pid] = np.array([p["cx"], p["cy"]], dtype=float)
+
+            # Fall back to manual_positions for any player absent from assignments
+            # (e.g. P4 is off-screen in the seed frame and was annotated by hand).
+            for pid, mp in first_ann.get("manual_positions", {}).items():
+                if pid in PLAYER_IDS and pid not in player_pos:
+                    player_pos[pid] = np.array([float(mp["x"]), float(mp["y"])], dtype=float)
+
+            if not player_pos:
+                print("ERROR: Could not resolve any player positions from GT seed annotation.")
+                sys.exit(1)
+
+            calib_anchor = {pid: pos.copy() for pid, pos in player_pos.items()}
+
+            # Bootstrap colour refs: use the same rolling seed over COLOR_SEED_FRAMES.
+            _, _, player_color_ref = _seed_from_detections(frames)
+
+            print("  GT-seeded positions:")
+            for pid, pos in player_pos.items():
+                print(f"    {pid}: ({pos[0]:.0f}, {pos[1]:.0f})")
+        else:
+            print("No-LLM mode: seeding from first full-court frame …")
+            player_pos, calib_anchor, player_color_ref = _seed_from_detections(frames)
         if not player_pos:
             print("ERROR: No detections found in the video.")
             sys.exit(1)
@@ -795,7 +961,8 @@ def identify_players(
     # so the cap is tight for frame-to-frame movement but grows linearly with the
     # number of frames the player has been absent, enabling re-acquisition after
     # occlusions without ever allowing a jump across the full court in one step.
-    MOVE_PX_PER_FRAME = 20.0   # generous per-frame budget (covers camera shake/dives)
+    MOVE_PX_PER_FRAME = 35.0   # generous per-frame budget; wider gate reduces missed
+                               # re-acquisitions after ByteTrack ID churn or occlusions
     EMA_ALPHA         = 0.5    # position smoothing: 0=frozen anchor, 1=raw detection
     MAX_MISSING_FR    = 60     # 1.2 s at 50 fps — hold last position before marking lost
 
@@ -838,6 +1005,22 @@ def identify_players(
                         unknown_det_indices.append(di)
                 else:
                     unknown_det_indices.append(di)
+
+            # Per-frame NMS: suppress unknown detections that heavily overlap an
+            # already-assigned detection.  ByteTrack occasionally fires two IDs on
+            # the same person (observed IoU>0.6); the second detection must not
+            # consume a player slot — it would force an incorrect player into the
+            # only remaining free slot and lock that mistake into running_hid_map.
+            FRAME_NMS_IOU = 0.3
+            if unknown_det_indices and per_frame_assigned:
+                suppressed: set[int] = set()
+                for di in unknown_det_indices:
+                    for assigned_di in per_frame_assigned:
+                        if _nms_iou(persons[di], persons[assigned_di]) > FRAME_NMS_IOU:
+                            suppressed.add(di)
+                            break
+                if suppressed:
+                    unknown_det_indices = [di for di in unknown_det_indices if di not in suppressed]
 
             # Phase B: cost-matrix assignment for detections with unknown H-IDs.
             if unknown_det_indices:
@@ -1128,7 +1311,8 @@ def _render_identified(
 @click.option("--sample-window", type=float, default=0.30, show_default=True, help="(LLM only) Fraction of video to sample calibration frames from.")
 @click.option("--no-llm", is_flag=True, default=False, help="Skip Gemini; identify via proximity + colour only (no API key required).")
 @click.option("--embeddings", is_flag=True, default=False, help="Use DINOv2 visual embeddings (Strategy B) to improve re-identification accuracy.")
-def identify_cmd(video, detections, output, render_identified, sample_window, no_llm, embeddings):
+@click.option("--seed-gt", default=None, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="(--no-llm only) Seed player positions from the first confirmed annotation in this GT JSON instead of auto-detecting from colour templates.  Use to isolate tracker ceiling from seeding quality.")
+def identify_cmd(video, detections, output, render_identified, sample_window, no_llm, embeddings, seed_gt):
     """Pass 2: Assign P1-P4 to detections via Gemini (default) or heuristic (--no-llm)."""
     import os
 
@@ -1182,4 +1366,5 @@ def identify_cmd(video, detections, output, render_identified, sample_window, no
         api_key=api_key,
         use_llm=use_llm,
         use_embeddings=embeddings,
+        seed_gt_path=seed_gt,
     )

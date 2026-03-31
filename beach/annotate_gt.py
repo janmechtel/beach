@@ -12,6 +12,8 @@ import click
 import cv2
 import numpy as np
 
+from beach.paths import identified_path, identified_suffix
+
 PLAYER_IDS: tuple[str, ...] = ("P1", "P2", "P3", "P4")
 DEFAULT_PLAYER_NAMES: dict[str, str] = {
     "P1": "Denny",
@@ -1087,22 +1089,19 @@ def run_annotation_server(state: dict, output_path: Path, port: int) -> None:
 
 @click.command("annotate-gt")
 @click.option(
-    "--detections",
-    "-d",
+    "--detections", "-d",
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Pass-1 detections JSON (default: <video_stem>_detections.json).",
 )
 @click.option(
-    "--identified",
-    "-i",
+    "--identified", "-i",
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Pass-2 identified JSON (default: <video_stem>_identified.json).",
+    help="Pass-2 identified JSON (default: best available next to video).",
 )
 @click.option(
-    "--output",
-    "-o",
+    "--output", "-o",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
     help="Output ground truth JSON path (default: <video_stem>_gt.json).",
@@ -1115,12 +1114,13 @@ def run_annotation_server(state: dict, output_path: Path, port: int) -> None:
     help="players.json path used for labels/colors (created if missing).",
 )
 @click.option(
-    "--video",
-    "-v",
+    "--video", "-v",
     required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Path to source video.",
 )
+@click.option("--no-llm", is_flag=True, default=False, help="Identify strategy was --no-llm (affects identified file lookup).")
+@click.option("--embeddings", is_flag=True, default=False, help="Identify strategy was --no-llm --embeddings.")
 @click.option("--port", type=int, default=7780, show_default=True)
 @click.option("--fps", type=float, default=50.0, show_default=True)
 def annotate_gt_cmd(
@@ -1129,26 +1129,47 @@ def annotate_gt_cmd(
     output: Optional[Path],
     players: Path,
     video: Path,
+    no_llm: bool,
+    embeddings: bool,
     port: int,
     fps: float,
 ) -> None:
     detections_path = detections or video.with_name(video.stem + "_detections.json")
-    identified_path = identified or video.with_name(video.stem + "_identified.json")
+    if not detections_path.exists():
+        raise click.ClickException(
+            f"Detections file not found: {detections_path}\n"
+            "Run 'beach track' first, or supply --detections explicitly."
+        )
 
-    for label, path in (("detections", detections_path), ("identified", identified_path)):
-        if not path.exists():
-            raise click.ClickException(
-                f"{label.capitalize()} file not found: {path}\n"
-                f"Run the appropriate pass first, or supply --{label} explicitly."
+    # Resolve identified file: explicit > strategy-derived > any available > absent.
+    if identified is not None:
+        identified_file: Path | None = identified
+    else:
+        # Try the strategy the user indicated first, then the other variants.
+        preferred = identified_path(video, no_llm=no_llm, embeddings=embeddings)
+        all_suffixes = ("_identified_embeddings.json", "_identified_heuristic.json", "_identified.json")
+        candidates = [preferred] + [
+            video.with_name(video.stem + s) for s in all_suffixes if video.with_name(video.stem + s) != preferred
+        ]
+        identified_file = next((p for p in candidates if p.exists()), None)
+        if identified_file is not None:
+            click.echo(f"Using identified file: {identified_file}", err=True)
+        else:
+            click.echo(
+                "No identified file found — frames will have no pre-labels. "
+                "Run 'beach identify' first for faster annotation.",
+                err=True,
             )
 
     det_json = _load_json(detections_path)
-    id_json = _load_json(identified_path)
+    id_frames: list[dict] = []
+    if identified_file is not None:
+        id_json = _load_json(identified_file)
+        id_frames = id_json.get("frames") or []
 
     det_frames = det_json.get("frames")
-    id_frames = id_json.get("frames")
-    if not isinstance(det_frames, list) or not isinstance(id_frames, list):
-        raise click.ClickException("Both detections and identified JSON must contain top-level 'frames' array")
+    if not isinstance(det_frames, list):
+        raise click.ClickException("Detections JSON must contain a top-level 'frames' array")
 
     output_path = output if output is not None else video.with_name(video.stem + "_gt.json")
 
