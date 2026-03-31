@@ -78,6 +78,7 @@ from google import genai
 from google.genai import types
 from scipy.optimize import linear_sum_assignment
 
+from beach.paths import identified_path
 # ---------------------------------------------------------------------------
 # Players — fixed roster
 # ---------------------------------------------------------------------------
@@ -1120,7 +1121,7 @@ def _render_identified(
 
 
 @click.command("identify")
-@click.option("--video", "-v", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Source video file.")
+@click.option("--video", "-v", default=None, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Source video file (default: derived from --detections stem).")
 @click.option("--detections", "-d", default=None, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Pass-1 detections JSON (default: <video_stem>_detections.json).")
 @click.option("--output", "-o", default=None, type=click.Path(dir_okay=False, path_type=Path), help="Output path for identified JSON (default: <video_stem>_identified.json).")
 @click.option("--render-identified", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Optional: render annotated video to this path.")
@@ -1131,8 +1132,31 @@ def identify_cmd(video, detections, output, render_identified, sample_window, no
     """Pass 2: Assign P1-P4 to detections via Gemini (default) or heuristic (--no-llm)."""
     import os
 
+    # Resolve mutual defaults: each of video/detections can anchor the other.
+    if video is None and detections is None:
+        raise click.UsageError(
+            "Provide at least --video or --detections so the other path can be inferred."
+        )
+
+    if video is None:
+        # Strip '_detections' suffix if present, look for matching video.
+        stem = detections.stem
+        if stem.endswith("_detections"):
+            stem = stem[: -len("_detections")]
+        # Try common video extensions in order.
+        for ext in (".mp4", ".MP4", ".mov", ".MOV", ".avi"):
+            candidate = detections.with_name(stem + ext)
+            if candidate.exists():
+                video = candidate
+                break
+        if video is None:
+            raise click.ClickException(
+                f"Could not find a video file for stem '{stem}' next to {detections}.\n"
+                "Supply --video explicitly."
+            )
+
     detections_path = detections or video.with_name(video.stem + "_detections.json")
-    output_path = output or video.with_name(video.stem + "_identified.json")
+    output_path = output or identified_path(video, no_llm=no_llm, embeddings=embeddings)
 
     if not detections_path.exists():
         raise click.ClickException(

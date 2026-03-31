@@ -6,6 +6,8 @@ from typing import Any
 
 import click
 
+from beach.paths import identified_path
+
 PLAYER_IDS = ["P1", "P2", "P3", "P4"]
 ALL_LABELS = [*PLAYER_IDS, None]
 LABEL_NAMES = {"P1": "Denny", "P2": "O-Love", "P3": "Ibu 800", "P4": "Bjirk"}
@@ -370,40 +372,70 @@ def _print_metrics(metrics: dict[str, Any], gt_path: Path, identified_path: Path
 
 @click.command("eval-id")
 @click.option(
-    "--identified",
-    "-i",
-    required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Identified JSON file (output of beach identify).",
-)
-@click.option(
-    "--ground-truth",
-    "-g",
+    "--video", "-v",
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Ground-truth annotation JSON (default: <identified_stem minus _identified suffix>_gt.json).",
+    help="Source video (anchor for deriving identified and ground-truth paths).",
 )
 @click.option(
-    "--output",
-    "-o",
+    "--identified", "-i",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Identified JSON file (default: derived from --video and strategy flags).",
+)
+@click.option(
+    "--ground-truth", "-g",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Ground-truth annotation JSON (default: <video_stem>_gt.json).",
+)
+@click.option(
+    "--output", "-o",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
     help="Optional output path for metrics JSON.",
 )
-def eval_id_cmd(identified: Path, ground_truth: Path | None, output: Path | None) -> None:
+@click.option("--no-llm", is_flag=True, default=False, help="Identify strategy was --no-llm.")
+@click.option("--embeddings", is_flag=True, default=False, help="Identify strategy was --no-llm --embeddings.")
+def eval_id_cmd(
+    video: Path | None,
+    identified: Path | None,
+    ground_truth: Path | None,
+    output: Path | None,
+    no_llm: bool,
+    embeddings: bool,
+) -> None:
     """Evaluate identified player IDs against frame-level ground truth annotations."""
-    # Derive ground-truth path: strip optional '_identified' suffix, append '_gt'.
+    if identified is None and video is None:
+        raise click.UsageError(
+            "Provide --video (to derive paths) or --identified explicitly."
+        )
+
+    if identified is None:
+        identified = identified_path(video, no_llm=no_llm, embeddings=embeddings)
+        if not identified.exists():
+            raise click.ClickException(
+                f"Identified file not found: {identified}\n"
+                "Run 'beach identify' first, or supply --identified explicitly."
+            )
+
     if ground_truth is None:
-        base = identified.stem
-        if base.endswith("_identified"):
-            base = base[: -len("_identified")]
-        ground_truth = identified.with_name(base + "_gt.json")
+        # Anchor on video when available; otherwise strip strategy suffix from identified stem.
+        if video is not None:
+            ground_truth = video.with_name(video.stem + "_gt.json")
+        else:
+            base = identified.stem
+            for sfx in ("_embeddings", "_heuristic", "_identified"):
+                if base.endswith(sfx):
+                    base = base[: -len(sfx)]
+                    break
+            ground_truth = identified.with_name(base + "_gt.json")
         if not ground_truth.exists():
             raise click.ClickException(
                 f"Ground-truth file not found: {ground_truth}\n"
                 "Run 'beach annotate-gt' first, or supply --ground-truth explicitly."
             )
-    """Evaluate identified player IDs against frame-level ground truth annotations."""
+
     try:
         metrics, warnings = evaluate_identification(identified, ground_truth)
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:

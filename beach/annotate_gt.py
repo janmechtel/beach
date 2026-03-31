@@ -12,21 +12,21 @@ import click
 import cv2
 import numpy as np
 
-PLAYER_LABELS: dict[Optional[str], str] = {
-    "P1": "P1 (Denny)",
-    "P2": "P2 (O-Love)",
-    "P3": "P3 (Ibu 800)",
-    "P4": "P4 (Bjirk)",
-    None: "null",
+PLAYER_IDS: tuple[str, ...] = ("P1", "P2", "P3", "P4")
+DEFAULT_PLAYER_NAMES: dict[str, str] = {
+    "P1": "Denny",
+    "P2": "O-Love",
+    "P3": "Ibu 800",
+    "P4": "Bjirk",
 }
-
-PLAYER_COLORS_RGB: dict[Optional[str], tuple[int, int, int]] = {
-    "P1": (200, 200, 200),
-    "P2": (50, 200, 255),
-    "P3": (50, 200, 50),
-    "P4": (50, 255, 200),
-    None: (120, 120, 120),
+DEFAULT_PLAYER_COLORS_HEX: dict[str, str] = {
+    "P1": "#000000",
+    "P2": "#94a3b8",
+    "P3": "#3b82f6",
+    "P4": "#22c55e",
 }
+NULL_PLAYER_COLOR_RGB: tuple[int, int, int] = (120, 120, 120)
+DEFAULT_PLAYERS_PATH = Path("output/players.json")
 
 
 HTML_PAGE = """<!doctype html>
@@ -44,11 +44,15 @@ HTML_PAGE = """<!doctype html>
     .progress-wrap { width: 100%; height: 14px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
     .progress-fill { height: 100%; width: 0%; background: #16a34a; transition: width .15s; }
     .layout { display: grid; grid-template-columns: minmax(420px, 1fr) 420px; gap: 16px; }
-    img { max-width: 100%; border: 1px solid #d1d5db; border-radius: 6px; }
+    .frame-wrap { position: relative; display: inline-block; width: 100%; border: 1px solid #d1d5db; border-radius: 6px; overflow: hidden; background: #0f172a; }
+    #frameImg { width: 100%; display: block; }
+    #frameOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
     tr.focused { background: #eff6ff; }
+    tr:hover { background: #f8fafc; }
     .swatch { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #374151; display: inline-block; }
+    select { width: 100%; padding: 4px; }
     .summary { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-top: 10px; }
     .ok-banner { display: none; margin: 10px 0; padding: 10px; border-radius: 8px; background: #dcfce7; color: #166534; font-weight: 700; }
     .muted { color: #6b7280; font-size: 13px; }
@@ -60,9 +64,9 @@ HTML_PAGE = """<!doctype html>
   <div id=\"allDone\" class=\"ok-banner\">All frames confirmed!</div>
 
   <div class=\"row\">
-    <button id=\"prevBtn\">← Prev</button>
-    <button id=\"nextBtn\">Next →</button>
-    <button id=\"confirmBtn\">Confirm (Enter)</button>
+    <button id=\"prevBtn\">← Prev frame</button>
+    <button id=\"nextBtn\">Next frame →</button>
+    <button id=\"confirmBtn\">Confirm frame</button>
     <div class=\"counter\" id=\"counter\">(0 / 0)</div>
     <div class=\"grow muted\" id=\"meta\"></div>
   </div>
@@ -74,23 +78,35 @@ HTML_PAGE = """<!doctype html>
 
   <div class=\"layout\">
     <div>
-      <img id=\"frameImg\" alt=\"frame\" />
+      <div class=\"frame-wrap\">
+        <img id=\"frameImg\" alt=\"frame\" />
+        <svg id=\"frameOverlay\"></svg>
+      </div>
     </div>
 
     <div>
       <table>
         <thead>
-          <tr><th></th><th>Detection</th><th>H-ID</th><th>Player</th></tr>
+          <tr><th></th><th>Player</th><th>H-ID</th><th>Manual pos</th></tr>
         </thead>
-        <tbody id=\"detBody\"></tbody>
+        <tbody id=\"playerBody\"></tbody>
       </table>
       <div id=\"summary\" class=\"summary\"></div>
-      <div class=\"muted\" style=\"margin-top:8px\">Shortcuts: Tab focus row, 1/2/3/4 assign player, n=null, Enter=confirm+next, ←/→ navigation.</div>
+      <div class="muted" style="margin-top:8px">Shortcuts: Tab next row, Shift+Tab previous row, Enter confirm frame + next, PageUp/PageDown prev/next frame, ←/→ cycle H-ID for focused row (assigned IDs are skipped for other players), 1/2/3/4 jump to P1..P4, n jump to null row, click frame to set manual position for focused player, Backspace/Delete clears focused manual position.</div>
     </div>
   </div>
 
   <script>
-    const state = { keyframes: [], gt: null, idx: 0, focusedDet: 0 };
+    const PLAYERS = __PLAYERS_JSON__;
+    const PLAYER_INDEX_BY_KEY = new Map(PLAYERS.map((p, idx) => [String(p.key), idx]));
+
+    const state = {
+      keyframes: [],
+      gt: null,
+      idx: 0,
+      focusedPlayerIdx: 0,
+      selectedNullHid: null,
+    };
 
     function frameCount() { return state.keyframes.length; }
 
@@ -130,22 +146,393 @@ HTML_PAGE = """<!doctype html>
       return annByFrame(kf.frame_idx);
     }
 
-    function renderSummary(ann) {
-      const bits = ann.assignments.map(a => {
-        const pid = a.player_id || 'null';
-        return `det ${a.detection_index} (${a.human_track_id || 'H?'}) → ${pid}`;
-      });
-      const text = bits.length ? bits.join('; ') : 'No detections in this frame.';
-      document.getElementById('summary').textContent = text;
+    function assignmentForPlayer(playerKey) {
+      if (playerKey === null) return null;
+      const ann = currentAnnotation();
+      return ann.assignments.find(a => a.player_id === playerKey) || null;
     }
 
-    function setAssignment(detIdx, value) {
+    function ensureManualPositions(ann) {
+      if (!ann.manual_positions || typeof ann.manual_positions !== 'object') {
+        ann.manual_positions = {};
+      }
+      return ann.manual_positions;
+    }
+
+    function manualPositionForPlayer(playerKey) {
+      if (playerKey === null) return null;
       const ann = currentAnnotation();
-      const target = ann.assignments.find(a => a.detection_index === detIdx);
+      const manual = ensureManualPositions(ann);
+      const raw = manual[playerKey];
+      if (!raw || typeof raw !== 'object') return null;
+      const x = Number(raw.x);
+      const y = Number(raw.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x, y };
+    }
+
+    function allHids() {
+      const ann = currentAnnotation();
+      const seen = new Set();
+      const hids = [];
+      for (const assignment of ann.assignments) {
+        const hid = assignment.human_track_id;
+        if (hid === null || hid === undefined) continue;
+        const key = String(hid);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hids.push(key);
+      }
+      return hids;
+    }
+
+    function unassignedHids() {
+      const ann = currentAnnotation();
+      return ann.assignments
+        .filter(a => a.player_id === null && a.human_track_id !== null && a.human_track_id !== undefined)
+        .map(a => String(a.human_track_id));
+    }
+
+    function availableHidsForPlayer(playerKey) {
+      if (playerKey === null) return unassignedHids();
+      const ann = currentAnnotation();
+      const myIdx = PLAYERS.findIndex(p => p.key === playerKey);
+      // HIDs already taken by players earlier in order (P1 before P2, etc.) are off-limits.
+      const takenByPrior = new Set(
+        ann.assignments
+          .filter(a => {
+            if (a.player_id === null || a.player_id === undefined) return false;
+            if (a.human_track_id === null || a.human_track_id === undefined) return false;
+            const otherIdx = PLAYERS.findIndex(p => p.key === a.player_id);
+            return otherIdx !== -1 && otherIdx < myIdx;
+          })
+          .map(a => String(a.human_track_id))
+      );
+      return allHids().filter(hid => !takenByPrior.has(String(hid)));
+    }
+
+    function setPlayerAssignment(playerKey, hidOrNull) {
+      const ann = currentAnnotation();
+
+      if (playerKey === null) {
+        state.selectedNullHid = hidOrNull;
+        if (hidOrNull !== null) {
+          const target = ann.assignments.find(a => String(a.human_track_id) === String(hidOrNull));
+          if (target) target.player_id = null;
+        }
+        renderFrame();
+        saveState();
+        return;
+      }
+
+      // Clearing a player row explicitly removes its assignment.
+      if (hidOrNull === null) {
+        for (const a of ann.assignments) {
+          if (a.player_id === playerKey) a.player_id = null;
+        }
+        renderFrame();
+        saveState();
+        const focused = focusedPlayerSelect();
+        if (focused) focused.focus({ preventScroll: true });
+        return;
+      }
+
+      const target = ann.assignments.find(a => String(a.human_track_id) === String(hidOrNull));
       if (!target) return;
-      target.player_id = value;
+
+      // One player maps to at most one H-ID: clear any old holder of this player.
+      for (const a of ann.assignments) {
+        if (a.player_id === playerKey) a.player_id = null;
+      }
+      target.player_id = playerKey;
+
+      state.selectedNullHid = null;
       renderFrame();
       saveState();
+      const focused = focusedPlayerSelect();
+      if (focused) focused.focus({ preventScroll: true });
+    }
+
+    function setFocusedPlayerManualPosition(x, y) {
+      const player = focusedPlayer();
+      if (!player || player.key === null) return;
+      const ann = currentAnnotation();
+      const manual = ensureManualPositions(ann);
+      manual[player.key] = { x: Math.round(x), y: Math.round(y) };
+      renderFrame();
+      saveState();
+      const focused = focusedPlayerSelect();
+      if (focused) focused.focus({ preventScroll: true });
+    }
+
+    function clearManualPosition(playerKey) {
+      if (playerKey === null) return;
+      const ann = currentAnnotation();
+      const manual = ensureManualPositions(ann);
+      if (!(playerKey in manual)) return;
+      delete manual[playerKey];
+      renderFrame();
+      saveState();
+      const focused = focusedPlayerSelect();
+      if (focused) focused.focus({ preventScroll: true });
+    }
+
+    function clearFocusedManualPosition() {
+      const player = focusedPlayer();
+      if (!player || player.key === null) return;
+      clearManualPosition(player.key);
+    }
+
+    function renderSummary() {
+      const ann = currentAnnotation();
+      const manual = ensureManualPositions(ann);
+      const parts = [];
+      for (const p of PLAYERS) {
+        if (p.key === null) {
+          const free = unassignedHids();
+          parts.push(`null → [${free.length ? free.join(', ') : 'none'}]`);
+          continue;
+        }
+        const own = assignmentForPlayer(p.key);
+        if (own && own.human_track_id) {
+          parts.push(`${p.key} → ${own.human_track_id}`);
+          continue;
+        }
+        const pos = manual[p.key];
+        if (pos && Number.isFinite(Number(pos.x)) && Number.isFinite(Number(pos.y))) {
+          parts.push(`${p.key} → manual(${Math.round(Number(pos.x))}, ${Math.round(Number(pos.y))})`);
+        } else {
+          parts.push(`${p.key} → none`);
+        }
+      }
+      document.getElementById('summary').textContent = parts.join(' · ');
+    }
+
+    function overlayColor(playerId) {
+      const p = PLAYERS.find(x => x.key === playerId) || PLAYERS[PLAYERS.length - 1];
+      return `rgb(${p.color[0]}, ${p.color[1]}, ${p.color[2]})`;
+    }
+
+    function renderOverlay() {
+      const svg = document.getElementById('frameOverlay');
+      const img = document.getElementById('frameImg');
+      const kf = currentKeyframe();
+      const ann = currentAnnotation();
+      if (!kf || !ann) return;
+      if (!img.naturalWidth || !img.naturalHeight) return;
+
+      svg.setAttribute('viewBox', `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+      svg.innerHTML = '';
+
+      const byDetIdx = new Map(ann.assignments.map(a => [a.detection_index, a]));
+      for (const det of kf.detections) {
+        const assign = byDetIdx.get(det.detection_index);
+        const pid = assign ? assign.player_id : null;
+        const [x1, y1, x2, y2] = det.bbox;
+        const w = Math.max(1, x2 - x1);
+        const h = Math.max(1, y2 - y1);
+        const color = overlayColor(pid);
+
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', String(x1));
+        rect.setAttribute('y', String(y1));
+        rect.setAttribute('width', String(w));
+        rect.setAttribute('height', String(h));
+        rect.setAttribute('fill', 'none');
+        rect.setAttribute('stroke', color);
+        rect.setAttribute('stroke-width', '3');
+        svg.appendChild(rect);
+
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', String(x1 + 4));
+        text.setAttribute('y', String(Math.max(16, y1 + 18)));
+        text.setAttribute('font-size', '18');
+        text.setAttribute('font-weight', '700');
+        text.setAttribute('stroke', '#000');
+        text.setAttribute('stroke-width', '3');
+        text.setAttribute('paint-order', 'stroke');
+        text.setAttribute('fill', '#fff');
+        text.textContent = det.human_track_id || `det ${det.detection_index}`;
+        svg.appendChild(text);
+      }
+
+      for (const player of PLAYERS) {
+        if (player.key === null) continue;
+        const own = assignmentForPlayer(player.key);
+        if (own) continue;
+        const manualPos = manualPositionForPlayer(player.key);
+        if (!manualPos) continue;
+        const color = overlayColor(player.key);
+
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        marker.setAttribute('cx', String(manualPos.x));
+        marker.setAttribute('cy', String(manualPos.y));
+        marker.setAttribute('r', '10');
+        marker.setAttribute('fill', 'none');
+        marker.setAttribute('stroke', color);
+        marker.setAttribute('stroke-width', '3');
+        svg.appendChild(marker);
+
+        const hLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        hLine.setAttribute('x1', String(manualPos.x - 14));
+        hLine.setAttribute('y1', String(manualPos.y));
+        hLine.setAttribute('x2', String(manualPos.x + 14));
+        hLine.setAttribute('y2', String(manualPos.y));
+        hLine.setAttribute('stroke', color);
+        hLine.setAttribute('stroke-width', '3');
+        svg.appendChild(hLine);
+
+        const vLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        vLine.setAttribute('x1', String(manualPos.x));
+        vLine.setAttribute('y1', String(manualPos.y - 14));
+        vLine.setAttribute('x2', String(manualPos.x));
+        vLine.setAttribute('y2', String(manualPos.y + 14));
+        vLine.setAttribute('stroke', color);
+        vLine.setAttribute('stroke-width', '3');
+        svg.appendChild(vLine);
+
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('x', String(manualPos.x + 12));
+        label.setAttribute('y', String(Math.max(16, manualPos.y - 12)));
+        label.setAttribute('font-size', '16');
+        label.setAttribute('font-weight', '700');
+        label.setAttribute('stroke', '#000');
+        label.setAttribute('stroke-width', '3');
+        label.setAttribute('paint-order', 'stroke');
+        label.setAttribute('fill', '#fff');
+        label.textContent = `${player.key} manual`;
+        svg.appendChild(label);
+      }
+    }
+
+    function updateFocusHighlight() {
+      document.querySelectorAll('#playerBody tr').forEach((row, idx) => {
+        row.classList.toggle('focused', idx === state.focusedPlayerIdx);
+      });
+    }
+
+    function renderPlayerRows() {
+      const body = document.getElementById('playerBody');
+      body.innerHTML = '';
+
+      for (let idx = 0; idx < PLAYERS.length; idx++) {
+        const player = PLAYERS[idx];
+        const tr = document.createElement('tr');
+        tr.dataset.playerKey = String(player.key);
+        if (idx === state.focusedPlayerIdx) tr.classList.add('focused');
+
+        const sw = document.createElement('td');
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = `rgb(${player.color[0]},${player.color[1]},${player.color[2]})`;
+        sw.appendChild(swatch);
+
+        const playerTd = document.createElement('td');
+        playerTd.textContent = player.label;
+
+        const hidTd = document.createElement('td');
+        const sel = document.createElement('select');
+        sel.dataset.playerKey = String(player.key);
+
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '—';
+        sel.appendChild(empty);
+
+        const options = availableHidsForPlayer(player.key);
+        for (const hid of options) {
+          const opt = document.createElement('option');
+          opt.value = String(hid);
+          opt.textContent = String(hid);
+          sel.appendChild(opt);
+        }
+
+        if (player.key === null) {
+          const nullValue = state.selectedNullHid && options.includes(state.selectedNullHid) ? state.selectedNullHid : '';
+          sel.value = nullValue;
+        } else {
+          const own = assignmentForPlayer(player.key);
+          const ownHid = own && own.human_track_id ? String(own.human_track_id) : '';
+          sel.value = ownHid;
+        }
+
+        sel.addEventListener('focus', () => {
+          state.focusedPlayerIdx = idx;
+          updateFocusHighlight();
+        });
+        sel.addEventListener('change', (e) => {
+          const next = e.target.value || null;
+          setPlayerAssignment(player.key, next);
+        });
+
+        tr.addEventListener('click', () => {
+          state.focusedPlayerIdx = idx;
+          updateFocusHighlight();
+          sel.focus({ preventScroll: true });
+        });
+
+        const posTd = document.createElement('td');
+        if (player.key === null) {
+          posTd.textContent = '—';
+        } else {
+          const manualPos = manualPositionForPlayer(player.key);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          if (manualPos) {
+            btn.textContent = `Clear (${Math.round(manualPos.x)}, ${Math.round(manualPos.y)})`;
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              state.focusedPlayerIdx = idx;
+              updateFocusHighlight();
+              clearManualPosition(player.key);
+            });
+          } else {
+            btn.textContent = 'Set by click';
+            btn.disabled = false;
+          }
+          posTd.appendChild(btn);
+        }
+
+        hidTd.appendChild(sel);
+        tr.appendChild(sw);
+        tr.appendChild(playerTd);
+        tr.appendChild(hidTd);
+        tr.appendChild(posTd);
+        body.appendChild(tr);
+      }
+    }
+
+    function focusedPlayer() {
+      return PLAYERS[state.focusedPlayerIdx] || PLAYERS[0];
+    }
+
+    function focusedPlayerSelect() {
+      const player = focusedPlayer();
+      return document.querySelector(`select[data-player-key="${String(player.key)}"]`);
+    }
+
+    function cycleFocusedHid(delta) {
+      const player = focusedPlayer();
+      const options = availableHidsForPlayer(player.key);
+      if (!options.length) return;
+      const current = player.key === null
+        ? (state.selectedNullHid ? String(state.selectedNullHid) : null)
+        : (() => {
+            const own = assignmentForPlayer(player.key);
+            return own && own.human_track_id !== null && own.human_track_id !== undefined ? String(own.human_track_id) : null;
+          })();
+      const curIdx = current === null ? -1 : options.findIndex(v => String(v) === current);
+      let nextIdx = curIdx + delta;
+      if (nextIdx < 0) nextIdx = options.length - 1;
+      if (nextIdx >= options.length) nextIdx = 0;
+      setPlayerAssignment(player.key, options[nextIdx]);
+    }
+
+    function focusDelta(delta) {
+      state.focusedPlayerIdx = (state.focusedPlayerIdx + delta + PLAYERS.length) % PLAYERS.length;
+      updateFocusHighlight();
+      const sel = focusedPlayerSelect();
+      if (sel) sel.focus({ preventScroll: true });
     }
 
     function nextUnconfirmedFrom(start) {
@@ -156,109 +543,120 @@ HTML_PAGE = """<!doctype html>
       return clampIdx(start);
     }
 
-    function confirmAndAdvance() {
+    function confirmAndAdvanceFrame() {
       const ann = currentAnnotation();
       ann.confirmed = true;
       const next = nextUnconfirmedFrom(state.idx + 1);
       state.idx = (next === state.idx && state.idx < frameCount() - 1) ? state.idx + 1 : next;
+      state.focusedPlayerIdx = 0;
+      state.selectedNullHid = null;
       renderFrame();
       saveState();
+      const sel = focusedPlayerSelect();
+      if (sel) sel.focus({ preventScroll: true });
+    }
+
+    function goFrame(delta) {
+      state.idx = clampIdx(state.idx + delta);
+      state.focusedPlayerIdx = 0;
+      state.selectedNullHid = null;
+      renderFrame();
+      const sel = focusedPlayerSelect();
+      if (sel) sel.focus({ preventScroll: true });
+    }
+
+    function setManualPositionFromFrameClick(event) {
+      const player = focusedPlayer();
+      if (!player || player.key === null) return;
+      const img = document.getElementById('frameImg');
+      if (!img.naturalWidth || !img.naturalHeight) return;
+      const rect = img.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const relX = (event.clientX - rect.left) / rect.width;
+      const relY = (event.clientY - rect.top) / rect.height;
+      if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return;
+      const x = Math.max(0, Math.min(img.naturalWidth - 1, relX * img.naturalWidth));
+      const y = Math.max(0, Math.min(img.naturalHeight - 1, relY * img.naturalHeight));
+      setFocusedPlayerManualPosition(x, y);
+    }
+
+    function firstUnconfirmedIdx() {
+      for (let i = 0; i < frameCount(); i++) {
+        const ann = annByFrame(state.keyframes[i].frame_idx);
+        if (ann && !ann.confirmed) return i;
+      }
+      return 0;
     }
 
     function renderFrame() {
       if (frameCount() === 0) return;
-
       state.idx = clampIdx(state.idx);
-      state.focusedDet = 0;
 
       const kf = currentKeyframe();
       const ann = currentAnnotation();
-
       document.getElementById('counter').textContent = `(${state.idx + 1} / ${frameCount()})`;
       document.getElementById('meta').textContent = `frame ${kf.frame_idx} · t=${kf.timestamp_sec.toFixed(2)}s${ann.confirmed ? ' · confirmed' : ''}`;
-      document.getElementById('frameImg').src = `data:image/jpeg;base64,${kf.image_b64}`;
 
-      const body = document.getElementById('detBody');
-      body.innerHTML = '';
+      const img = document.getElementById('frameImg');
+      img.onload = () => renderOverlay();
+      img.src = `data:image/jpeg;base64,${kf.image_b64}`;
 
-      for (const det of kf.detections) {
-        const tr = document.createElement('tr');
-        if (det.detection_index === state.focusedDet) tr.classList.add('focused');
-
-        const sw = document.createElement('td');
-        const swatch = document.createElement('span');
-        swatch.className = 'swatch';
-        swatch.style.background = `rgb(${det.color_rgb[0]},${det.color_rgb[1]},${det.color_rgb[2]})`;
-        sw.appendChild(swatch);
-
-        const detTd = document.createElement('td');
-        detTd.textContent = String(det.detection_index);
-
-        const hid = document.createElement('td');
-        hid.textContent = det.human_track_id || 'null';
-
-        const selectTd = document.createElement('td');
-        const sel = document.createElement('select');
-        sel.dataset.detIdx = String(det.detection_index);
-        for (const [value, label] of [["", "null"], ["P1", "P1 (Denny)"], ["P2", "P2 (O-Love)"], ["P3", "P3 (Ibu 800)"], ["P4", "P4 (Bjirk)"]]) {
-          const opt = document.createElement('option');
-          opt.value = value;
-          opt.textContent = label;
-          sel.appendChild(opt);
-        }
-        const assignment = ann.assignments.find(a => a.detection_index === det.detection_index);
-        sel.value = assignment && assignment.player_id ? assignment.player_id : '';
-        sel.addEventListener('focus', () => {
-          state.focusedDet = det.detection_index;
-          renderFrame();
-        });
-        sel.addEventListener('change', (e) => {
-          const v = e.target.value || null;
-          setAssignment(det.detection_index, v);
-        });
-
-        selectTd.appendChild(sel);
-        tr.appendChild(sw);
-        tr.appendChild(detTd);
-        tr.appendChild(hid);
-        tr.appendChild(selectTd);
-        body.appendChild(tr);
-      }
-
-      renderSummary(ann);
+      renderPlayerRows();
+      renderSummary();
       updateProgress();
+      renderOverlay();
     }
 
-    function focusedSelect() {
-      return document.querySelector(`select[data-det-idx=\"${state.focusedDet}\"]`);
-    }
-
-    function assignFocused(pidOrNull) {
-      const sel = focusedSelect();
-      if (!sel) return;
-      sel.value = pidOrNull || '';
-      setAssignment(state.focusedDet, pidOrNull);
-    }
-
-    function go(delta) {
-      state.idx = clampIdx(state.idx + delta);
-      renderFrame();
-    }
-
-    document.getElementById('prevBtn').addEventListener('click', () => go(-1));
-    document.getElementById('nextBtn').addEventListener('click', () => go(1));
-    document.getElementById('confirmBtn').addEventListener('click', () => confirmAndAdvance());
+    document.getElementById('prevBtn').addEventListener('click', () => goFrame(-1));
+    document.getElementById('nextBtn').addEventListener('click', () => goFrame(1));
+    document.getElementById('confirmBtn').addEventListener('click', () => confirmAndAdvanceFrame());
+    document.getElementById('frameImg').addEventListener('click', (e) => setManualPositionFromFrameClick(e));
 
     document.addEventListener('keydown', (e) => {
-      if (e.target && e.target.tagName === 'INPUT') return;
-      if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); go(1); }
-      else if (e.key === 'Enter') { e.preventDefault(); confirmAndAdvance(); }
-      else if (e.key === '1') { e.preventDefault(); assignFocused('P1'); }
-      else if (e.key === '2') { e.preventDefault(); assignFocused('P2'); }
-      else if (e.key === '3') { e.preventDefault(); assignFocused('P3'); }
-      else if (e.key === '4') { e.preventDefault(); assignFocused('P4'); }
-      else if (e.key.toLowerCase() === 'n') { e.preventDefault(); assignFocused(null); }
+      const tag = e.target && e.target.tagName ? e.target.tagName.toUpperCase() : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        focusDelta(e.shiftKey ? -1 : 1);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        confirmAndAdvanceFrame();
+        return;
+      }
+      if (e.key === 'PageUp') {
+        e.preventDefault();
+        goFrame(-1);
+        return;
+      }
+      if (e.key === 'PageDown') {
+        e.preventDefault();
+        goFrame(1);
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        cycleFocusedHid(-1);
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        cycleFocusedHid(1);
+        return;
+      }
+      if (e.key === '1') { e.preventDefault(); state.focusedPlayerIdx = PLAYER_INDEX_BY_KEY.get('P1'); updateFocusHighlight(); focusedPlayerSelect()?.focus({ preventScroll: true }); return; }
+      if (e.key === '2') { e.preventDefault(); state.focusedPlayerIdx = PLAYER_INDEX_BY_KEY.get('P2'); updateFocusHighlight(); focusedPlayerSelect()?.focus({ preventScroll: true }); return; }
+      if (e.key === '3') { e.preventDefault(); state.focusedPlayerIdx = PLAYER_INDEX_BY_KEY.get('P3'); updateFocusHighlight(); focusedPlayerSelect()?.focus({ preventScroll: true }); return; }
+      if (e.key === '4') { e.preventDefault(); state.focusedPlayerIdx = PLAYER_INDEX_BY_KEY.get('P4'); updateFocusHighlight(); focusedPlayerSelect()?.focus({ preventScroll: true }); return; }
+      if (e.key.toLowerCase() === 'n') { e.preventDefault(); state.focusedPlayerIdx = PLAYER_INDEX_BY_KEY.get('null'); updateFocusHighlight(); focusedPlayerSelect()?.focus({ preventScroll: true }); return; }
+      if (e.key.toLowerCase() === 'c') { e.preventDefault(); confirmAndAdvanceFrame(); }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        clearFocusedManualPosition();
+        return;
+      }
     });
 
     async function init() {
@@ -266,7 +664,10 @@ HTML_PAGE = """<!doctype html>
       const payload = await resp.json();
       state.keyframes = payload.keyframes;
       state.gt = payload.gt;
+      state.idx = firstUnconfirmedIdx();
       renderFrame();
+      const sel = focusedPlayerSelect();
+      if (sel) sel.focus({ preventScroll: true });
     }
 
     init();
@@ -284,6 +685,102 @@ def _load_json(path: Path) -> dict:
         raise click.ClickException(f"File not found: {path}") from exc
     except json.JSONDecodeError as exc:
         raise click.ClickException(f"Invalid JSON in {path}: {exc}") from exc
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    text = value.strip()
+    if text.startswith("#"):
+        text = text[1:]
+    if len(text) != 6:
+        raise click.ClickException(f"Invalid hex color '{value}'; expected #RRGGBB")
+    try:
+        return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError as exc:
+        raise click.ClickException(f"Invalid hex color '{value}'; expected #RRGGBB") from exc
+
+
+def _default_players_data() -> dict[str, dict[str, str]]:
+    team_by_pid = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
+    return {
+        pid: {
+            "name": DEFAULT_PLAYER_NAMES[pid],
+            "color": DEFAULT_PLAYER_COLORS_HEX[pid],
+            "description": "",
+            "team": team_by_pid[pid],
+            "position": "",
+        }
+        for pid in PLAYER_IDS
+    }
+
+
+def _load_or_init_players(players_path: Path) -> dict[str, dict[str, str]]:
+    defaults = _default_players_data()
+    if not players_path.exists():
+        players_path.parent.mkdir(parents=True, exist_ok=True)
+        players_path.write_text(json.dumps(defaults, indent=2), encoding="utf-8")
+        return defaults
+
+    payload = _load_json(players_path)
+    if not isinstance(payload, dict):
+        raise click.ClickException(f"Invalid players file {players_path}: top-level JSON must be an object")
+
+    merged: dict[str, dict[str, str]] = {}
+    changed = False
+    for pid in PLAYER_IDS:
+        default_entry = defaults[pid].copy()
+        raw_entry = payload.get(pid)
+        if isinstance(raw_entry, dict):
+            for key, value in raw_entry.items():
+                if isinstance(value, str):
+                    default_entry[key] = value
+                else:
+                    changed = True
+        else:
+            changed = True
+        merged[pid] = default_entry
+        if raw_entry != default_entry:
+            changed = True
+
+    if changed:
+        players_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    return merged
+
+
+def _build_players_config(
+    players_data: dict[str, dict[str, str]],
+) -> tuple[list[dict], dict[Optional[str], tuple[int, int, int]]]:
+    players_ui: list[dict] = []
+    colors_by_player: dict[Optional[str], tuple[int, int, int]] = {None: NULL_PLAYER_COLOR_RGB}
+    for pid in PLAYER_IDS:
+        raw = players_data.get(pid, {})
+        name = raw.get("name") or DEFAULT_PLAYER_NAMES[pid]
+        color_hex = raw.get("color") or DEFAULT_PLAYER_COLORS_HEX[pid]
+        color_rgb = _hex_to_rgb(color_hex)
+        players_ui.append(
+            {
+                "key": pid,
+                "label": f"{pid} ({name})",
+                "color": [int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2])],
+            }
+        )
+        colors_by_player[pid] = color_rgb
+
+    players_ui.append(
+        {
+            "key": None,
+            "label": "null",
+            "color": [
+                int(NULL_PLAYER_COLOR_RGB[0]),
+                int(NULL_PLAYER_COLOR_RGB[1]),
+                int(NULL_PLAYER_COLOR_RGB[2]),
+            ],
+        }
+    )
+    return players_ui, colors_by_player
+
+
+def _render_html_page(players_ui: list[dict]) -> bytes:
+    return HTML_PAGE.replace("__PLAYERS_JSON__", json.dumps(players_ui)).encode("utf-8")
 
 
 def _distance_sq(ax: float, ay: float, bx: float, by: float) -> float:
@@ -353,8 +850,34 @@ def select_keyframes(
     selected = _trim_evenly(selected, max_count=60)
     return [by_frame[idx] for idx in selected if idx in by_frame]
 
+def include_existing_frames(
+    selected_frames: list[dict],
+    detections_frames: list[dict],
+    existing_gt: dict,
+    *,
+    only_confirmed: bool = True,
+) -> list[dict]:
+    by_frame = {int(frame.get("frame")): frame for frame in detections_frames if isinstance(frame, dict) and "frame" in frame}
+    chosen = {int(frame.get("frame")) for frame in selected_frames if isinstance(frame, dict) and "frame" in frame}
 
-def preseed_keyframes(keyframes: list[dict], identified_frames: list[dict]) -> list[dict]:
+    for ann in existing_gt.get("annotations", []):
+        if not isinstance(ann, dict) or "frame" not in ann:
+            continue
+        if only_confirmed and not bool(ann.get("confirmed", False)):
+            continue
+        frame_idx = int(ann.get("frame"))
+        if frame_idx in by_frame:
+            chosen.add(frame_idx)
+
+    ordered = sorted(chosen)
+    return [by_frame[idx] for idx in ordered if idx in by_frame]
+
+
+def preseed_keyframes(
+    keyframes: list[dict],
+    identified_frames: list[dict],
+    player_colors_rgb: dict[Optional[str], tuple[int, int, int]],
+) -> list[dict]:
     id_by_frame = {int(f["frame"]): f for f in identified_frames}
     seeded: list[dict] = []
 
@@ -386,7 +909,7 @@ def preseed_keyframes(keyframes: list[dict], identified_frames: list[dict]) -> l
                 seed = id_persons[det_idx].get("player_id")
 
             seed = seed if seed in {"P1", "P2", "P3", "P4"} else None
-            color = PLAYER_COLORS_RGB.get(seed, PLAYER_COLORS_RGB[None])
+            color = player_colors_rgb.get(seed, player_colors_rgb[None])
             detections.append(
                 {
                     "detection_index": det_idx,
@@ -413,25 +936,11 @@ def preseed_keyframes(keyframes: list[dict], identified_frames: list[dict]) -> l
     return seeded
 
 
-def extract_annotated_frame(cap: cv2.VideoCapture, frame_idx: int, detections: list[dict]) -> str:
+def extract_annotated_frame(cap: cv2.VideoCapture, frame_idx: int) -> str:
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ok, frame = cap.read()
     if not ok:
         raise click.ClickException(f"Could not read frame {frame_idx} from video")
-
-    for det in detections:
-        x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
-        rgb = tuple(int(v) for v in det.get("color_rgb", [120, 120, 120]))
-        color_bgr = (rgb[2], rgb[1], rgb[0])
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), 5)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color_bgr, 3)
-
-        label = str(det["detection_index"])
-        tx = x1 + 6
-        ty = y1 + 28
-        cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
 
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
@@ -458,6 +967,7 @@ def _build_new_gt(video_path: Path, detections_path: Path, keyframes: list[dict]
                     }
                     for det in kf["detections"]
                 ],
+                "manual_positions": {},
             }
             for kf in keyframes
         ],
@@ -488,6 +998,18 @@ def _merge_existing_gt(gt: dict, existing: dict) -> dict:
                 continue
             pid = prev.get("player_id")
             assignment["player_id"] = pid if pid in {"P1", "P2", "P3", "P4"} else None
+        manual_positions: dict[str, dict[str, int]] = {}
+        raw_manual = old.get("manual_positions")
+        if isinstance(raw_manual, dict):
+            for pid in PLAYER_IDS:
+                pos = raw_manual.get(pid)
+                if not isinstance(pos, dict):
+                    continue
+                x = pos.get("x")
+                y = pos.get("y")
+                if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                    manual_positions[pid] = {"x": int(round(float(x))), "y": int(round(float(y)))}
+        ann["manual_positions"] = manual_positions
 
     gt["created"] = existing.get("created", gt["created"])
     return gt
@@ -514,7 +1036,7 @@ def _make_handler(state: dict, output_path: Path):
 
         def do_GET(self):
             if self.path == "/":
-                body = HTML_PAGE.encode("utf-8")
+                body = _render_html_page(state["players_ui"])
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -586,6 +1108,13 @@ def run_annotation_server(state: dict, output_path: Path, port: int) -> None:
     help="Output ground truth JSON path (default: <video_stem>_gt.json).",
 )
 @click.option(
+    "--players",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=DEFAULT_PLAYERS_PATH,
+    show_default=True,
+    help="players.json path used for labels/colors (created if missing).",
+)
+@click.option(
     "--video",
     "-v",
     required=True,
@@ -598,6 +1127,7 @@ def annotate_gt_cmd(
     detections: Path | None,
     identified: Path | None,
     output: Optional[Path],
+    players: Path,
     video: Path,
     port: int,
     fps: float,
@@ -622,28 +1152,38 @@ def annotate_gt_cmd(
 
     output_path = output if output is not None else video.with_name(video.stem + "_gt.json")
 
+    existing_gt: dict | None = None
+    if output_path.exists():
+        existing_payload = _load_json(output_path)
+        if isinstance(existing_payload, dict):
+            existing_gt = existing_payload
+
+    players_data = _load_or_init_players(players)
+    players_ui, player_colors_rgb = _build_players_config(players_data)
+
     selected = select_keyframes(det_frames, id_frames, fps=fps, interval_sec=2.0)
-    keyframes = preseed_keyframes(selected, id_frames)
+    if existing_gt is not None:
+        selected = include_existing_frames(selected, det_frames, existing_gt, only_confirmed=True)
+    keyframes = preseed_keyframes(selected, id_frames, player_colors_rgb)
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise click.ClickException(f"Cannot open video: {video}")
     try:
         for kf in keyframes:
-            kf["image_b64"] = extract_annotated_frame(cap, kf["frame_idx"], kf["detections"])
+            kf["image_b64"] = extract_annotated_frame(cap, kf["frame_idx"])
     finally:
         cap.release()
 
-    gt = _build_new_gt(video, detections, keyframes)
-    if output_path.exists():
-        existing = _load_json(output_path)
-        if isinstance(existing, dict):
-            gt = _merge_existing_gt(gt, existing)
+    gt = _build_new_gt(video, detections_path, keyframes)
+    if existing_gt is not None:
+        gt = _merge_existing_gt(gt, existing_gt)
 
-    state = {"keyframes": keyframes, "gt": gt}
+    state = {"keyframes": keyframes, "gt": gt, "players_ui": players_ui}
 
     print(f"Annotation server running at http://localhost:{port}")
     print(f"GT will be saved to {output_path}")
+    print(f"Players file for labels/colors: {players}")
     print("Press Ctrl+C to stop.")
 
     try:
