@@ -11,6 +11,7 @@ dependencies = [
     "ultralytics>=8.3",
     "numpy>=1.26",
     "scipy>=1.11",
+    "lap>=0.5.12",
 ]
 
 [project.scripts]

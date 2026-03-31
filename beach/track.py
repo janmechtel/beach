@@ -3,18 +3,21 @@ Pass 1: Detect persons and ball; assign anonymous temporal track IDs (H1..Hn).
 
 Pipeline
 --------
-1. Run YOLO yolo11n on the source video to detect persons (class 0).
+1. Run YOLO yolo11n on the source video to detect persons (class 0) using
+   ByteTrack (built into ultralytics) for robust cross-frame identity.
 2. Run a volleyball-specific YOLO model for ball detection (optional).
-3. Track persons across frames with a greedy IoU tracker, assigning stable
-   anonymous IDs H1, H2, … for the duration they remain visible.  These IDs
-   are NOT player IDs — they are anonymous appearance anchors for pass 2.
+3. ByteTrack assigns stable anonymous IDs H1, H2, … using Kalman-filter
+   motion prediction + a two-stage re-association that recovers tracks after
+   occlusions.  These IDs are NOT player IDs — they are anonymous appearance
+   anchors for pass 2.
 4. Write per-frame detections to --output-json (always).
 5. Optionally render an annotated video to --render-video (only when flag given).
 
 ID stability notes
 ------------------
-- IoU-based greedy matching.  A track is kept alive for MAX_MISSING_FRAMES
-  frames after its last detection so brief occlusions don't break continuity.
+- ByteTrack (tracker="bytetrack.yaml", persist=True) handles re-association
+  internally.  It keeps a "lost" pool and tries to recover tracks before
+  spawning new IDs, which avoids the ID-switch problem of pure IoU matching.
 - When the number of active tracks exceeds the expected player count (4) the
   tracker will still assign IDs, but pass 2 should treat those detections as
   uncertain.
@@ -42,11 +45,11 @@ Output JSON schema
 Usage
 -----
     # JSON only (default — fast):
-    uv run annotate_video.py --video chunks/GH021569_001.mp4 \
+    uv run beach track --video chunks/GH021569_001.mp4 \
                              --output-json chunks/GH021569_001_detections.json
 
     # JSON + rendered video:
-    uv run annotate_video.py --video chunks/GH021569_001.mp4 \
+    uv run beach track --video chunks/GH021569_001.mp4 \
                              --output-json chunks/GH021569_001_detections.json \
                              --render-video chunks/GH021569_001_annotated.mp4
 """
@@ -54,7 +57,6 @@ Usage
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -71,11 +73,6 @@ COCO_PERSON = 0
 PERSON_CONF = 0.35
 BALL_CONF   = 0.20
 
-# Tracker: a track is kept alive this many frames after last detection.
-# Beach volleyball is ~30 fps; 0.5 s = 15 frames covers a brief occlusion.
-MAX_MISSING_FRAMES = 15
-# Minimum IoU to consider a detection a match for an existing track.
-IOU_MATCH_THRESHOLD = 0.25
 
 # Render constants (only used when --render-video is given)
 BOX_THICKNESS  = 2
@@ -85,6 +82,8 @@ FONT_THICKNESS = 2
 LABEL_PAD      = 5
 BALL_RADIUS    = 14
 BALL_COLOR_BGR = (0, 220, 255)   # bright yellow in BGR
+SWATCH_W       = 14              # colour swatch square appended to label tag
+LABEL_GAP      = 4               # gap between text and swatch
 
 # One BGR colour per H-track index so tracks are visually distinct when rendered.
 _TRACK_COLORS = [
@@ -95,117 +94,6 @@ _TRACK_COLORS = [
     (255,  80,  80),  # H5 — blue (overflow)
     (200, 200,   0),  # H6 — cyan (overflow)
 ]
-
-
-# ---------------------------------------------------------------------------
-# IoU tracker
-# ---------------------------------------------------------------------------
-@dataclass
-class _Track:
-    track_id: str          # "H1", "H2", …
-    box: np.ndarray        # [x1,y1,x2,y2] float32
-    frames_since_seen: int = 0
-
-
-def _iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Intersection-over-Union of two [x1,y1,x2,y2] boxes."""
-    ix1 = max(a[0], b[0])
-    iy1 = max(a[1], b[1])
-    ix2 = min(a[2], b[2])
-    iy2 = min(a[3], b[3])
-    inter_w = max(0.0, ix2 - ix1)
-    inter_h = max(0.0, iy2 - iy1)
-    inter = inter_w * inter_h
-    if inter == 0.0:
-        return 0.0
-    area_a = (a[2] - a[0]) * (a[3] - a[1])
-    area_b = (b[2] - b[0]) * (b[3] - b[1])
-    return inter / (area_a + area_b - inter)
-
-
-class IoUTracker:
-    """Greedy frame-to-frame IoU tracker.
-
-    Assigns stable H-IDs to detections across frames.  No Kalman filter —
-    beach volleyball players move fast but the camera is usually static, so
-    plain box overlap is sufficient for continuity over short occlusions.
-    """
-
-    def __init__(self) -> None:
-        self._tracks: list[_Track] = []
-        self._next_id = 1
-
-    def update(self, detections: np.ndarray) -> list[Optional[str]]:
-        """Match detections to existing tracks; return per-detection H-IDs.
-
-        Parameters
-        ----------
-        detections:
-            Shape (N, 4) float32 array of [x1,y1,x2,y2] boxes.
-
-        Returns
-        -------
-        List of N strings ("H1", "H2", …) or None for unmatched detections
-        that did not reach IOU_MATCH_THRESHOLD against any active track.
-        In practice None should be rare once tracks are established.
-        """
-        n_det = len(detections)
-        assigned_track_ids: list[Optional[str]] = [None] * n_det
-
-        # Age all active tracks
-        for t in self._tracks:
-            t.frames_since_seen += 1
-
-        if n_det == 0:
-            # Prune dead tracks
-            self._tracks = [t for t in self._tracks if t.frames_since_seen <= MAX_MISSING_FRAMES]
-            return assigned_track_ids
-
-        # Build IoU matrix: tracks × detections
-        active = [t for t in self._tracks if t.frames_since_seen <= MAX_MISSING_FRAMES]
-        if active:
-            iou_matrix = np.zeros((len(active), n_det), dtype=np.float32)
-            for ti, track in enumerate(active):
-                for di, det in enumerate(detections):
-                    iou_matrix[ti, di] = _iou(track.box, det)
-
-            # Greedy matching: repeatedly pick the highest IoU pair
-            matched_tracks: set[int] = set()
-            matched_dets:   set[int] = set()
-            while True:
-                if iou_matrix.max() < IOU_MATCH_THRESHOLD:
-                    break
-                ti, di = np.unravel_index(np.argmax(iou_matrix), iou_matrix.shape)
-                ti, di = int(ti), int(di)
-                if ti in matched_tracks or di in matched_dets:
-                    iou_matrix[ti, di] = 0.0
-                    continue
-                # Accept match
-                active[ti].box = detections[di].astype(np.float32)
-                active[ti].frames_since_seen = 0
-                assigned_track_ids[di] = active[ti].track_id
-                matched_tracks.add(ti)
-                matched_dets.add(di)
-                iou_matrix[ti, :] = 0.0
-                iou_matrix[:, di] = 0.0
-
-        # Spawn new tracks for unmatched detections
-        for di in range(n_det):
-            if assigned_track_ids[di] is None:
-                new_id = f"H{self._next_id}"
-                self._next_id += 1
-                new_track = _Track(
-                    track_id=new_id,
-                    box=detections[di].astype(np.float32),
-                    frames_since_seen=0,
-                )
-                self._tracks.append(new_track)
-                assigned_track_ids[di] = new_id
-
-        # Prune dead tracks
-        self._tracks = [t for t in self._tracks if t.frames_since_seen <= MAX_MISSING_FRAMES]
-
-        return assigned_track_ids
 
 
 # ---------------------------------------------------------------------------
@@ -222,10 +110,29 @@ def _track_color(h_id: Optional[str]) -> tuple[int, int, int]:
     return _TRACK_COLORS[idx % len(_TRACK_COLORS)]
 
 
-def _torso_color_hsv(frame: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> list[float]:
-    """Mean HSV of the torso region: rows 20%–65% of bbox height, full width.
+# Sand HSV bounds — pixels matching all three ranges are treated as background.
+# Tuned for indoor beach volleyball courts: warm low-saturation beige/tan.
+# Hue 8-28 covers the yellow-brown range; low S filters out vivid non-sand
+# colours; V floor rejects shadows.
+_SAND_H = (8,  28)
+_SAND_S = (8,  110)
+_SAND_V = (110, 255)
 
-    Skips the head (top 20%) and legs/sand (bottom 35%) to focus on shirt color.
+
+def _torso_color_hsv(frame: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> list[float]:
+    """Clothing colour descriptor for the torso region (rows 20%–65% of bbox).
+
+    Two-stage filtering:
+    1. Sand mask: removes background pixels that match the court colour.
+    2. Mid-brightness gate (V 30–160): dark pixels carry no hue information
+       (black shorts/hair collapse S to zero and noise H); very bright pixels
+       are reflections or sand that slipped the mask.  Mean H and S are computed
+       from what remains so that e.g. a black shirt next to a coloured one still
+       shows a distinct tint difference.
+
+    V is reported as the mean of ALL clothing pixels (not just mid-V) so that a
+    predominantly dark outfit (low V) is distinguishable from a bright one.
+
     Returns [H, S, V] in OpenCV ranges (H: 0-180, S: 0-255, V: 0-255).
     Returns [0.0, 0.0, 0.0] when the crop is degenerate.
     """
@@ -240,9 +147,36 @@ def _torso_color_hsv(frame: np.ndarray, x1: float, y1: float, x2: float, y2: flo
     crop = frame[ty1:ty2, bx1:bx2]
     if crop.size == 0:
         return [0.0, 0.0, 0.0]
+
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    means = cv2.mean(hsv)[:3]
-    return [round(float(means[0]), 1), round(float(means[1]), 1), round(float(means[2]), 1)]
+    H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+    sand = (
+        (H >= _SAND_H[0]) & (H <= _SAND_H[1]) &
+        (S >= _SAND_S[0]) & (S <= _SAND_S[1]) &
+        (V >= _SAND_V[0]) & (V <= _SAND_V[1])
+    )
+    clothing     = ~sand
+    # Mid-brightness subset for H+S: excludes very dark pixels (no hue info)
+    # and very bright ones (reflections / sand leakage).
+    mid_v_clothing = clothing & (V >= 30) & (V <= 160)
+
+    if clothing.sum() < 20:
+        # Fully occluded or degenerate — fall back to raw mean.
+        raw = cv2.mean(hsv)[:3]
+        return [round(float(raw[0]), 1), round(float(raw[1]), 1), round(float(raw[2]), 1)]
+
+    # H and S from mid-brightness clothing pixels; V from all clothing pixels.
+    if mid_v_clothing.sum() >= 10:
+        mean_h = float(H[mid_v_clothing].mean())
+        mean_s = float(S[mid_v_clothing].mean())
+    else:
+        # Outfit is predominantly very dark (e.g. all-black) or very bright.
+        mean_h = float(H[clothing].mean())
+        mean_s = float(S[clothing].mean())
+    mean_v = float(V[clothing].mean())
+
+    return [round(mean_h, 1), round(mean_s, 1), round(mean_v, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -296,15 +230,16 @@ def run_detection(
         if not writer.isOpened():
             raise RuntimeError("Cannot open VideoWriter for render path")
 
-    tracker = IoUTracker()
     json_frames: list[dict] = []
     frames_with_ball = 0
     frame_idx = 0
 
-    for result in model.predict(
+    for result in model.track(
         source=str(video_path),
         classes=[COCO_PERSON],
         conf=PERSON_CONF,
+        tracker="bytetrack.yaml",
+        persist=True,
         stream=True,
         verbose=False,
     ):
@@ -318,22 +253,51 @@ def run_detection(
             xyxy = result.boxes.xyxy.cpu().numpy()      # (N, 4)
             conf = result.boxes.conf.cpu().numpy()       # (N,)
 
-            track_ids = tracker.update(xyxy)
+            # ByteTrack assigns integer IDs; format as H1/H2/… to preserve
+            # the downstream contract.  id tensor is None if tracking lost all.
+            raw_ids = result.boxes.id
+            id_array = raw_ids.cpu().numpy().astype(int) if raw_ids is not None else None
+            track_ids = [f"H{id_array[i]}" if id_array is not None else None
+                         for i in range(len(xyxy))]
 
             for box, c, h_id in zip(xyxy, conf, track_ids):
                 x1, y1, x2, y2 = map(int, box)
                 cx, cy = _bbox_centre(box)
-                color = _track_color(h_id)
+                color     = _track_color(h_id)
+                color_hsv = _torso_color_hsv(
+                    result.orig_img,
+                    float(box[0]), float(box[1]), float(box[2]), float(box[3]),
+                )
 
                 if render_path:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), BOX_THICKNESS + 1)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, BOX_THICKNESS)
                     label = f"{h_id or '?'} {c:.2f}"
                     (tw, th), _ = cv2.getTextSize(label, FONT, FONT_SCALE, FONT_THICKNESS)
-                    ly1 = max(y1 - th - LABEL_PAD * 2, 0)
-                    cv2.rectangle(frame, (x1, ly1), (x1 + tw + LABEL_PAD * 2, y1), color, cv2.FILLED)
+                    tag_w = tw + LABEL_PAD * 2 + LABEL_GAP + SWATCH_W
+                    ly1   = max(y1 - th - LABEL_PAD * 2, 0)
+                    cv2.rectangle(frame, (x1, ly1), (x1 + tag_w, y1), color, cv2.FILLED)
                     cv2.putText(frame, label, (x1 + LABEL_PAD, y1 - LABEL_PAD),
                                 FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS, cv2.LINE_AA)
+                    # Detected-colour swatch: non-sand torso colour from pass 1
+                    if color_hsv and color_hsv != [0.0, 0.0, 0.0]:
+                        h_val = min(int(round(color_hsv[0])), 179)
+                        s_val = min(int(round(color_hsv[1])), 255)
+                        # Boost V: floor at 50 so dark swatches are visible but still look dark.
+                        v_val = max(int(round(color_hsv[2])), 50)
+                        bgr = cv2.cvtColor(
+                            np.array([[[h_val, s_val, v_val]]], dtype=np.uint8),
+                            cv2.COLOR_HSV2BGR,
+                        )[0][0].tolist()
+                        sx1 = x1 + tw + LABEL_PAD * 2 + LABEL_GAP
+                        sx2 = sx1 + SWATCH_W
+                        sy1 = ly1 + 2
+                        sy2 = y1 - 2
+                        cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), (0, 0, 0), 1)
+                        cv2.rectangle(
+                            frame, (sx1 + 1, sy1 + 1), (sx2 - 1, sy2 - 1),
+                            (int(bgr[0]), int(bgr[1]), int(bgr[2])), cv2.FILLED,
+                        )
 
                 persons_json.append({
                     "cx": round(cx, 1),
@@ -343,18 +307,9 @@ def run_detection(
                     "x2": round(float(box[2]), 1),
                     "y2": round(float(box[3]), 1),
                     "conf": round(float(c), 3),
-                    "color_hsv": _torso_color_hsv(
-                        result.orig_img,
-                        float(box[0]),
-                        float(box[1]),
-                        float(box[2]),
-                        float(box[3]),
-                    ),
+                    "color_hsv": color_hsv,
                     "human_track_id": h_id,
                 })
-        else:
-            # No detections — still advance the tracker (ages all tracks)
-            tracker.update(np.empty((0, 4), dtype=np.float32))
 
         # --- Ball ---
         ball_json = None
@@ -407,14 +362,14 @@ def run_detection(
     print(f"JSON written  : {json_path}  ({json_path.stat().st_size / 1024:.1f} KB)")
 
 
-@click.command("annotate")
+@click.command("track")
 @click.option("--video", "-v", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Input video file.")
 @click.option("--output-json", "-j", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Output JSON path (default: <video_stem>_detections.json next to video).")
 @click.option("--render-video", "-r", type=click.Path(dir_okay=False, path_type=Path), default=None, help="If given, render annotated video to this path (slow).")
 @click.option("--person-model", type=click.Path(dir_okay=False, path_type=Path), default=Path("yolo11n.pt"), show_default=True, help="YOLO model for person detection.")
 @click.option("--ball-model", type=click.Path(dir_okay=False, path_type=Path), default=Path("volleyball_yolo11n.pt"), show_default=True, help="YOLO model for ball detection.")
-def annotate_cmd(video, output_json, render_video, person_model, ball_model):
-    """Pass 1: YOLO person + ball detection with anonymous track IDs."""
+def track_cmd(video, output_json, render_video, person_model, ball_model):
+    """Pass 1: YOLO person + ball detection with ByteTrack IDs."""
     json_path = output_json or video.with_name(video.stem + "_detections.json")
     run_detection(
         video_path=video,

@@ -120,12 +120,15 @@ CONSENSUS_THRESHOLD = 0.5
 # Sample from this fraction of the video (early portion has stable court presence).
 SAMPLE_WINDOW_FRAC = 0.30
 # Render constants
+BOX_THICKNESS  = 2
 FONT           = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE     = 0.65
 FONT_THICKNESS = 2
 LABEL_PAD      = 5
 BALL_RADIUS    = 14
 BALL_COLOR_BGR = (0, 220, 255)
+# No-LLM seed: number of frames to observe after seed frame for colour refs.
+COLOR_SEED_FRAMES = 30
 
 # One distinct BGR colour per player ID
 _PLAYER_COLORS: dict[str, tuple[int, int, int]] = {
@@ -422,6 +425,118 @@ def _resolve_conflicts(track_map: dict[str, str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# No-LLM bootstrap
+# ---------------------------------------------------------------------------
+def _seed_from_detections(
+    frames: list[dict],
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, list[float]]]:
+    """Seed player slots from the earliest full-court frame; no LLM required.
+
+    Finds the first frame with EXACT_PLAYER_COUNT persons and assigns P1..P4
+    left-to-right by cx.  Then runs a lightweight rolling tracker for
+    COLOR_SEED_FRAMES frames to build per-player colour references from the
+    torso HSV already stored in the detections JSON.
+
+    Returns:
+        player_pos       -- initial rolling positions {pid: np.array([cx, cy])}
+        calib_anchor     -- copy of initial positions (stale-track reset target)
+        player_color_ref -- mean HSV per player {pid: [H, S, V]}; empty if none
+    """
+    player_pos: dict[str, np.ndarray] = {}
+    seed_fi = -1
+
+    for frame in frames:
+        persons = frame["persons"]
+        if len(persons) >= EXACT_PLAYER_COUNT:
+            sorted_p = sorted(persons, key=lambda p: p["cx"])[:EXACT_PLAYER_COUNT]
+            player_pos = {
+                PLAYER_IDS[i]: np.array([p["cx"], p["cy"]], dtype=float)
+                for i, p in enumerate(sorted_p)
+            }
+            seed_fi = frame["frame"]
+            print(
+                f"  Seed frame {seed_fi} ({frame['timestamp_sec']:.1f}s): "
+                + ", ".join(
+                    f"{PLAYER_IDS[i]}<-cx{sorted_p[i]['cx']:.0f}"
+                    for i in range(EXACT_PLAYER_COUNT)
+                )
+            )
+            break
+
+    if not player_pos:
+        # Partial seed: fewer than EXACT_PLAYER_COUNT players visible simultaneously.
+        for frame in frames:
+            if frame["persons"]:
+                sorted_p = sorted(frame["persons"], key=lambda p: p["cx"])
+                player_pos = {
+                    PLAYER_IDS[i]: np.array([p["cx"], p["cy"]], dtype=float)
+                    for i, p in enumerate(sorted_p[: len(PLAYER_IDS)])
+                }
+                seed_fi = frame["frame"]
+                print(
+                    f"  WARNING: no frame with {EXACT_PLAYER_COUNT} persons. "
+                    f"Partial seed from frame {seed_fi} ({len(player_pos)} slots filled)."
+                )
+                break
+
+    if not player_pos:
+        return {}, {}, {}
+
+    calib_anchor: dict[str, np.ndarray] = {pid: pos.copy() for pid, pos in player_pos.items()}
+
+    # Build colour refs from the next COLOR_SEED_FRAMES frames using the same
+    # cost-matrix approach as the main tracker but with a loose distance gate.
+    # Loose gate is intentional: we want enough samples even if players move fast
+    # early on; quality is enforced by averaging over many observations.
+    SEED_MOVE_GATE = 20.0 * 5   # px -- 5x per-frame budget covers dives/fast motion
+    POS_SCALE = 750.0
+    pid_colors: dict[str, list[list[float]]] = defaultdict(list)
+    running_pos = {pid: pos.copy() for pid, pos in player_pos.items()}
+    seed_frames_seen = 0
+
+    for frame in frames:
+        if frame["frame"] < seed_fi:
+            continue
+        if seed_frames_seen >= COLOR_SEED_FRAMES:
+            break
+        persons = frame["persons"]
+        if not persons:
+            continue
+
+        n_det = len(persons)
+        cost = np.full((n_det, len(PLAYER_IDS)), 1e9, dtype=float)
+        for di, p in enumerate(persons):
+            det = np.array([p["cx"], p["cy"]], dtype=float)
+            for pi, pid in enumerate(PLAYER_IDS):
+                ref = running_pos.get(pid)
+                if ref is None:
+                    continue
+                dist = float(np.linalg.norm(det - ref))
+                if dist <= SEED_MOVE_GATE:
+                    cost[di, pi] = min(dist / POS_SCALE, 1.0)
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+        for ri, ci in zip(row_ind, col_ind):
+            if cost[ri, ci] < 1e8:
+                pid = PLAYER_IDS[ci]
+                p = persons[ri]
+                det = np.array([p["cx"], p["cy"]], dtype=float)
+                running_pos[pid] = 0.5 * det + 0.5 * running_pos[pid]
+                if p.get("color_hsv"):
+                    pid_colors[pid].append(p["color_hsv"])
+
+        seed_frames_seen += 1
+
+    player_color_ref: dict[str, list[float]] = {
+        pid: list(np.mean(pid_colors[pid], axis=0))
+        for pid in PLAYER_IDS
+        if pid_colors[pid]
+    }
+
+    return player_pos, calib_anchor, player_color_ref
+
+
+# ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
 def identify_players(
@@ -431,6 +546,8 @@ def identify_players(
     render_path: Optional[Path],
     sample_window_frac: float,
     api_key: str,
+    use_llm: bool = True,
+    use_embeddings: bool = False,
 ) -> None:
     data = json.loads(detections_path.read_text())
     frames: list[dict] = data["frames"]
@@ -438,171 +555,239 @@ def identify_players(
 
     print(f"Loaded {len(frames)} frames from {detections_path}")
 
-    # --- Select calibration frames ---
-    calib_frames = _select_calib_frames(
-        frames,
-        total_video_frames,
-        sample_window_frac,
-        MAX_CALIB_FRAMES,
-    )
-    print(f"Calibration: {len(calib_frames)} frames selected "
-          f"(window: first {sample_window_frac*100:.0f}%)")
+    if use_llm:
+        # ------------------------------------------------------------------
+        # Gemini calibration path
+        # ------------------------------------------------------------------
+        calib_frames = _select_calib_frames(
+            frames,
+            total_video_frames,
+            sample_window_frac,
+            MAX_CALIB_FRAMES,
+        )
+        print(f"Calibration: {len(calib_frames)} frames selected "
+              f"(window: first {sample_window_frac*100:.0f}%)")
 
-    if not calib_frames:
-        print("ERROR: No suitable calibration frames found. "
-              "The video may not have 4 simultaneously-visible, uniquely-tracked persons.")
-        sys.exit(1)
+        if not calib_frames:
+            print("ERROR: No suitable calibration frames found. "
+                  "The video may not have 4 simultaneously-visible, uniquely-tracked persons.")
+            sys.exit(1)
 
-    # --- Gemini calibration ---
-    client = genai.Client(api_key=api_key)
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
+        client = genai.Client(api_key=api_key)
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
 
-    calib_results: list[list[dict]] = []
-    calib_persons_list: list[list[dict]] = []
+        calib_results: list[list[dict]] = []
+        calib_persons_list: list[list[dict]] = []
 
-    for i, cf in enumerate(calib_frames):
-        fi = cf["frame"]
-        persons = cf["persons"]
-        print(f"  Calibration frame {i+1}/{len(calib_frames)}: "
-              f"frame {fi} ({cf['timestamp_sec']:.1f}s), "
-              f"{len(persons)} persons "
-              f"[{', '.join(p['human_track_id'] for p in persons)}]")
+        for i, cf in enumerate(calib_frames):
+            fi = cf["frame"]
+            persons = cf["persons"]
+            print(f"  Calibration frame {i+1}/{len(calib_frames)}: "
+                  f"frame {fi} ({cf['timestamp_sec']:.1f}s), "
+                  f"{len(persons)} persons "
+                  f"[{', '.join(p['human_track_id'] for p in persons)}]")
 
-        try:
-            full_jpeg = _extract_jpeg(cap, fi)
-            crops = [
-                _crop_jpeg(cap, fi, p["x1"], p["y1"], p["x2"], p["y2"])
-                for p in persons
-            ]
-        except RuntimeError as exc:
-            print(f"    Frame extraction failed: {exc} — skipping")
-            continue
+            try:
+                full_jpeg = _extract_jpeg(cap, fi)
+                crops = [
+                    _crop_jpeg(cap, fi, p["x1"], p["y1"], p["x2"], p["y2"])
+                    for p in persons
+                ]
+            except RuntimeError as exc:
+                print(f"    Frame extraction failed: {exc} — skipping")
+                continue
 
-        assignments = _call_gemini(client, full_jpeg, crops, persons)
-        if assignments is None:
-            continue
+            assignments = _call_gemini(client, full_jpeg, crops, persons)
+            if assignments is None:
+                continue
 
-        print(f"    Assignments: "
-              + ", ".join(
-                  f"{persons[a['detection_index']]['human_track_id']}→{a['player_id']}"
-                  for a in sorted(assignments, key=lambda x: x["detection_index"])
-              ))
-        calib_results.append(assignments)
-        calib_persons_list.append(persons)
+            print(f"    Assignments: "
+                  + ", ".join(
+                      f"{persons[a['detection_index']]['human_track_id']}\u2192{a['player_id']}"
+                      for a in sorted(assignments, key=lambda x: x["detection_index"])
+                  ))
+            calib_results.append(assignments)
+            calib_persons_list.append(persons)
 
-    if not calib_results:
-        print("ERROR: All Gemini calibration calls failed.")
-        sys.exit(1)
+        cap.release()
 
-    # --- Consensus ---
-    print(f"\nBuilding consensus from {len(calib_results)} successful calibration frames …")
-    track_map = _build_consensus(calib_results, calib_persons_list, CONSENSUS_THRESHOLD)
-    track_map = _resolve_conflicts(track_map)
+        if not calib_results:
+            print("ERROR: All Gemini calibration calls failed.")
+            sys.exit(1)
 
-    print("Track map:")
-    for hid, pid in sorted(track_map.items()):
-        print(f"  {hid} → {pid} ({PLAYERS[pid]['name']})")
-    unmapped_pids = set(PLAYER_IDS) - set(track_map.values())
-    if unmapped_pids:
-        print(f"  WARNING: players without a confident track: {unmapped_pids}")
+        # Consensus
+        print(f"\nBuilding consensus from {len(calib_results)} successful calibration frames \u2026")
+        track_map = _build_consensus(calib_results, calib_persons_list, CONSENSUS_THRESHOLD)
+        track_map = _resolve_conflicts(track_map)
 
-    # Build anchor centroids from the calibration frames for the centroid fallback.
-    # Average centroid per player across all calibration frames where that track appeared.
-    pid_cx: dict[str, list[float]] = defaultdict(list)
-    pid_cy: dict[str, list[float]] = defaultdict(list)
-    for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
-        for a in cf_assignments:
+        print("Track map:")
+        for hid, pid in sorted(track_map.items()):
+            print(f"  {hid} \u2192 {pid} ({PLAYERS[pid]['name']})")
+        unmapped_pids = set(PLAYER_IDS) - set(track_map.values())
+        if unmapped_pids:
+            print(f"  WARNING: players without a confident track: {unmapped_pids}")
+
+        # Anchor centroids (average per-player position across all calib frames).
+        pid_cx: dict[str, list[float]] = defaultdict(list)
+        pid_cy: dict[str, list[float]] = defaultdict(list)
+        for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
+            for a in cf_assignments:
+                di = a["detection_index"]
+                if di < len(cf_persons):
+                    p = cf_persons[di]
+                    hid = p.get("human_track_id")
+                    if hid and hid in track_map:
+                        pid = track_map[hid]
+                        pid_cx[pid].append(p["cx"])
+                        pid_cy[pid].append(p["cy"])
+
+        print("Anchor centroids (cx, cy):")
+        for pid in PLAYER_IDS:
+            if pid_cx[pid]:
+                ax = np.mean(pid_cx[pid])
+                ay = np.mean(pid_cy[pid])
+                print(f"  {pid} ({PLAYERS[pid]['name']}): ({ax:.0f}, {ay:.0f})")
+
+        # Initial player positions: seed from the best-spread calib frame.
+        first_persons = calib_persons_list[0]
+        first_assignments = calib_results[0]
+        player_pos: dict[str, np.ndarray] = {}
+        for a in first_assignments:
             di = a["detection_index"]
-            if di < len(cf_persons):
-                p = cf_persons[di]
-                hid = p.get("human_track_id")
-                if hid and hid in track_map:
-                    pid = track_map[hid]
-                    pid_cx[pid].append(p["cx"])
-                    pid_cy[pid].append(p["cy"])
+            if di < len(first_persons):
+                p = first_persons[di]
+                player_pos[a["player_id"]] = np.array([p["cx"], p["cy"]], dtype=float)
+        # Fallback via average for any player absent from the seed frame.
+        pid_cx2: dict[str, list[float]] = defaultdict(list)
+        pid_cy2: dict[str, list[float]] = defaultdict(list)
+        for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
+            for a in cf_assignments:
+                di = a["detection_index"]
+                if di < len(cf_persons):
+                    p = cf_persons[di]
+                    pid_cx2[a["player_id"]].append(p["cx"])
+                    pid_cy2[a["player_id"]].append(p["cy"])
+        for pid in PLAYER_IDS:
+            if pid not in player_pos and pid_cx2[pid]:
+                player_pos[pid] = np.array([np.mean(pid_cx2[pid]), np.mean(pid_cy2[pid])], dtype=float)
 
-    anchor_centroids: dict[str, tuple[float, float]] = {
-        pid: (np.mean(pid_cx[pid]), np.mean(pid_cy[pid]))
-        for pid in PLAYER_IDS
-        if pid_cx[pid]
-    }
-    print("Anchor centroids (cx, cy):")
-    for pid, (ax, ay) in anchor_centroids.items():
-        print(f"  {pid} ({PLAYERS[pid]['name']}): ({ax:.0f}, {ay:.0f})")
+        calib_anchor: dict[str, np.ndarray] = {k: v.copy() for k, v in player_pos.items()}
 
-    # Build initial player positions from the earliest calibration frame where all 4
-    # Gemini-confirmed players appear.  These seed the rolling tracker.
-    pid_cx: dict[str, list[float]] = defaultdict(list)
-    pid_cy: dict[str, list[float]] = defaultdict(list)
-    for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
-        for a in cf_assignments:
-            di = a["detection_index"]
-            if di < len(cf_persons):
-                p = cf_persons[di]
-                pid_cx[a["player_id"]].append(p["cx"])
-                pid_cy[a["player_id"]].append(p["cy"])
+        # Per-player colour references from calibration detections.
+        pid_colors: dict[str, list[list[float]]] = defaultdict(list)
+        for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
+            for a in cf_assignments:
+                di = a["detection_index"]
+                if di < len(cf_persons):
+                    p = cf_persons[di]
+                    if p.get("color_hsv"):
+                        pid_colors[a["player_id"]].append(p["color_hsv"])
+        player_color_ref: dict[str, list[float]] = {
+            pid: list(np.mean(pid_colors[pid], axis=0))
+            for pid in PLAYER_IDS
+            if pid_colors[pid]
+        }
+        if player_color_ref:
+            print("Player colour references (mean H, S, V):")
+            for pid, c in player_color_ref.items():
+                print(f"  {pid} ({PLAYERS[pid]['name']}): H={c[0]:.0f} S={c[1]:.0f} V={c[2]:.0f}")
+        else:
+            print("  No color_hsv in detections — colour blending disabled")
 
-    # player_pos[pid] = current rolling position estimate [cx, cy].
-    # calib_frames[0] is guaranteed by _select_calib_frames to be the best-spread frame
-    # (max min-pairwise-distance), so seeding from it gives the rolling tracker the
-    # clearest initial separation between players.
-    first_persons    = calib_persons_list[0]
-    first_assignments = calib_results[0]
-    player_pos: dict[str, np.ndarray] = {}
-    for a in first_assignments:
-        di = a["detection_index"]
-        if di < len(first_persons):
-            p = first_persons[di]
-            player_pos[a["player_id"]] = np.array([p["cx"], p["cy"]], dtype=float)
-    # Fallback for any player absent from the seed frame (shouldn't happen).
-    pid_cx: dict[str, list[float]] = defaultdict(list)
-    pid_cy: dict[str, list[float]] = defaultdict(list)
-    for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
-        for a in cf_assignments:
-            di = a["detection_index"]
-            if di < len(cf_persons):
-                p = cf_persons[di]
-                pid_cx[a["player_id"]].append(p["cx"])
-                pid_cy[a["player_id"]].append(p["cy"])
-    for pid in PLAYER_IDS:
-        if pid not in player_pos and pid_cx[pid]:
-            player_pos[pid] = np.array([np.mean(pid_cx[pid]), np.mean(pid_cy[pid])], dtype=float)
-
-    # Fixed anchor used when a player's rolling position goes stale.
-    # Reset to these coordinates after MAX_MISSING_FR frames without a detection.
-    calib_anchor: dict[str, np.ndarray] = {k: v.copy() for k, v in player_pos.items()}
-
-    # Build per-player color references from calibration detections.
-    # Average color_hsv across all calibration appearances of each player.
-    # Falls back to None if detections have no color_hsv (pre-color pass-1 data).
-    pid_colors: dict[str, list[list[float]]] = defaultdict(list)
-    for cf_persons, cf_assignments in zip(calib_persons_list, calib_results):
-        for a in cf_assignments:
-            di = a["detection_index"]
-            if di < len(cf_persons):
-                p = cf_persons[di]
-                if p.get("color_hsv"):
-                    pid_colors[a["player_id"]].append(p["color_hsv"])
-
-    player_color_ref: dict[str, list[float]] = {
-        pid: list(np.mean(pid_colors[pid], axis=0))
-        for pid in PLAYER_IDS
-        if pid_colors[pid]
-    }
-    if player_color_ref:
-        print("Player color references (mean H, S, V):")
-        for pid, c in player_color_ref.items():
-            print(f"  {pid} ({PLAYERS[pid]['name']}): H={c[0]:.0f} S={c[1]:.0f} V={c[2]:.0f}")
     else:
-        print("  No color_hsv in detections — color blending disabled")
+        # ------------------------------------------------------------------
+        # No-LLM path: seed from first full-court frame, build colour refs
+        # from the following COLOR_SEED_FRAMES frames.
+        # ------------------------------------------------------------------
+        print("No-LLM mode: seeding from first full-court frame …")
+        player_pos, calib_anchor, player_color_ref = _seed_from_detections(frames)
+        if not player_pos:
+            print("ERROR: No detections found in the video.")
+            sys.exit(1)
+        if player_color_ref:
+            print("Player colour references (mean H, S, V):")
+            for pid, c in player_color_ref.items():
+                print(f"  {pid}: H={c[0]:.0f} S={c[1]:.0f} V={c[2]:.0f}")
+        else:
+            print("  No color_hsv in detections — colour tracking disabled")
+        track_map: dict[str, str] = {}  # not meaningful without LLM
+        calib_frames: list[dict] = []
+        calib_results: list[list[dict]] = []
 
-
-    print("Initial player positions (from calibration):")
+    print("Initial player positions:")
     for pid, pos in player_pos.items():
-        print(f"  {pid} ({PLAYERS[pid]['name']}): ({pos[0]:.0f}, {pos[1]:.0f})")
+        name_str = f" ({PLAYERS[pid]['name']})" if use_llm else ""
+        print(f"  {pid}{name_str}: ({pos[0]:.0f}, {pos[1]:.0f})")
 
+    # Strategy B: DINOv2 embedding gallery.
+    # Initialized here; enrollment happens in two places:
+    #   1. Calibration frames (LLM path) — trusted crops for known players.
+    #   2. Per-frame assignment loop — after each confident Phase B resolution.
+    gallery = None
+    embed_cap = None
+    if use_embeddings:
+        from beach.embeddings import EmbeddingGallery
+        gallery = EmbeddingGallery(PLAYER_IDS)
+        embed_cap = cv2.VideoCapture(str(video_path))
+        if not embed_cap.isOpened():
+            print("  WARNING: Could not open video for embedding enrollment — disabling embeddings.")
+            gallery = None
+            embed_cap = None
+        else:
+            # Enroll from calibration frames (LLM path) or the seed frame (no-LLM path).
+            enroll_frames = calib_frames if use_llm else []
+            if not enroll_frames and player_pos:
+                # No-LLM: find the seed frame in the detections and enroll it.
+                for f in frames:
+                    if len(f["persons"]) >= EXACT_PLAYER_COUNT:
+                        enroll_frames = [f]
+                        break
+            enrolled = 0
+            for ef in enroll_frames:
+                fi = ef["frame"]
+                persons_ef = ef["persons"]
+                # Build a detection_index -> player_id map for this enroll frame.
+                if use_llm:
+                    # Use the calibration result for this frame if available.
+                    # calib_results aligns with calib_frames by index.
+                    try:
+                        ci = calib_frames.index(ef)
+                        if ci < len(calib_results):
+                            det_to_pid = {
+                                a["detection_index"]: a["player_id"]
+                                for a in calib_results[ci]
+                            }
+                        else:
+                            det_to_pid = {}
+                    except ValueError:
+                        det_to_pid = {}
+                else:
+                    # No-LLM seed frame: use left-to-right P1..P4 order.
+                    sorted_p = sorted(persons_ef, key=lambda p: p["cx"])[:EXACT_PLAYER_COUNT]
+                    det_to_pid = {persons_ef.index(sp): PLAYER_IDS[i] for i, sp in enumerate(sorted_p)}
+                embed_cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+                ret, enroll_frame = embed_cap.read()
+                if not ret:
+                    continue
+                H_ef, W_ef = enroll_frame.shape[:2]
+                for di, p in enumerate(persons_ef):
+                    pid = det_to_pid.get(di)
+                    if pid is None:
+                        continue
+                    x1c = max(0, int(p["x1"]))
+                    y1c = max(0, int(p["y1"]))
+                    x2c = min(W_ef, int(p["x2"]))
+                    y2c = min(H_ef, int(p["y2"]))
+                    if x2c > x1c and y2c > y1c:
+                        crop = enroll_frame[y1c:y2c, x1c:x2c]
+                        gallery.enroll(pid, crop)
+                        enrolled += 1
+            print(f"  Embedding gallery: enrolled {enrolled} crops from {len(enroll_frames)} calibration frame(s).")
+            for pid in PLAYER_IDS:
+                status = "enrolled" if gallery.has_enrollment(pid) else "MISSING"
+                print(f"    {pid} ({PLAYERS[pid]['name']}): {status}")
     # Rolling tracker parameters.
     # At 50 fps, a volleyball player at full sprint (~5 m/s) over a court that spans
     # ~1200 px moves at most ~6 px/frame.  We allow MOVE_PX_PER_FRAME * (1 + absent)
@@ -611,10 +796,16 @@ def identify_players(
     # occlusions without ever allowing a jump across the full court in one step.
     MOVE_PX_PER_FRAME = 20.0   # generous per-frame budget (covers camera shake/dives)
     EMA_ALPHA         = 0.5    # position smoothing: 0=frozen anchor, 1=raw detection
-    MAX_MISSING_FR    = 60     # 1.2 s at 50 fps — hold last position before resetting
+    MAX_MISSING_FR    = 60     # 1.2 s at 50 fps — hold last position before marking lost
 
-    # frames_missing[pid] counts consecutive frames a player was not assigned
+    # frames_missing[pid] counts consecutive frames a player was not assigned.
     frames_missing: dict[str, int] = {pid: 0 for pid in PLAYER_IDS}
+
+    # Strategy A: running H-ID -> player map.  Seeded from calibration track_map.
+    # Extended incrementally as new H-IDs are confidently assigned by the cost matrix.
+    # This is the authoritative map — when a known H-ID reappears, its player assignment
+    # is inherited directly without running the cost matrix, preventing drift on crossings.
+    running_hid_map: dict[str, str] = dict(track_map)   # copy so we can extend it
 
     # --- Propagate across all frames using rolling position tracker ---
     enriched_frames: list[dict] = []
@@ -627,43 +818,129 @@ def identify_players(
         per_frame_assigned: dict[int, str] = {}  # detection_index -> player_id
 
         if n_det > 0:
-            # Cost matrix: rows = detections, cols = players.
-            # The allowed search radius grows linearly with how many frames a player has
-            # been absent.  When last seen 0 frames ago: radius = MOVE_PX_PER_FRAME.
-            # When absent for 30 frames: radius = 620 px (effectively the whole court),
-            # so the player can be re-acquired wherever they re-enter the frame.
-            # COLOR_WEIGHT blends appearance into the cost; 0 = position only.
-            # Position is still the HARD gate (velocity cap) — color only breaks
-            # ties among candidates that pass the distance threshold.
-            COLOR_WEIGHT = 0.25
-            # Scale position distance to 0-1 (half frame width ≈ 750 px).
-            POS_SCALE = 750.0
-
-            cost = np.full((n_det, len(PLAYER_IDS)), 1e9, dtype=float)
+            # Phase A: H-ID continuity — inherit assignment for known tracks.
+            # This is a hard constraint: if we have already confidently mapped this
+            # H-ID to a player, we trust it.  This eliminates most drift from the old
+            # approach where every frame re-ran the full cost matrix.
+            unknown_det_indices: list[int] = []   # detections needing cost-matrix resolution
             for di, p in enumerate(persons):
-                det = np.array([p["cx"], p["cy"]], dtype=float)
-                p_color = p.get("color_hsv")  # may be None for old detections
-                for pi, pid in enumerate(PLAYER_IDS):
-                    ref = player_pos.get(pid, calib_anchor.get(pid))
-                    if ref is None:
-                        continue
-                    dist = float(np.linalg.norm(det - ref))
-                    absent = frames_missing.get(pid, 0)
-                    max_dist = MOVE_PX_PER_FRAME * max(1, absent + 1)
-                    if dist > max_dist:
-                        continue  # forbidden — leave as 1e9
-                    pos_cost = min(dist / POS_SCALE, 1.0)
-                    if p_color and pid in player_color_ref:
-                        c_cost = _color_distance(p_color, player_color_ref[pid])
-                        cost[di, pi] = (1.0 - COLOR_WEIGHT) * pos_cost + COLOR_WEIGHT * c_cost
+                hid = p.get("human_track_id")
+                if hid and hid in running_hid_map:
+                    pid = running_hid_map[hid]
+                    # Guard: reject if another detection in this frame already claimed pid.
+                    if pid not in per_frame_assigned.values():
+                        per_frame_assigned[di] = pid
                     else:
-                        cost[di, pi] = pos_cost
+                        # Collision — two detections map to the same player via the HID map.
+                        # This can happen when ByteTrack briefly assigns the same ID to two
+                        # tracks (rare).  Treat as unknown and let the cost matrix resolve.
+                        unknown_det_indices.append(di)
+                else:
+                    unknown_det_indices.append(di)
 
+            # Phase B: cost-matrix assignment for detections with unknown H-IDs.
+            if unknown_det_indices:
+                # Players already claimed by Phase A cannot be assigned again.
+                claimed_pids = set(per_frame_assigned.values())
+                free_player_indices = [
+                    pi for pi, pid in enumerate(PLAYER_IDS)
+                    if pid not in claimed_pids
+                ]
 
-            row_ind, col_ind = linear_sum_assignment(cost)
-            for ri, ci in zip(row_ind, col_ind):
-                if cost[ri, ci] < 1e8:  # accepted (not forbidden)
-                    per_frame_assigned[int(ri)] = PLAYER_IDS[int(ci)]
+                # COLOR_WEIGHT blends appearance into the cost; 0 = position only.
+                # In no-LLM mode bump colour weight: without a Gemini-confirmed name
+                # mapping, colour is the primary disambiguation signal when two players
+                # come close together after an occlusion.
+                COLOR_WEIGHT = 0.25 if use_llm else 0.40
+                # EMBED_WEIGHT: when the gallery is available, embedding similarity
+                # is a richer signal than 3-float HSV.  Blend it on top.
+                # Combined cost = (1 - EMBED_WEIGHT) * pos_color_blend + EMBED_WEIGHT * embed_cost
+                EMBED_WEIGHT = 0.40 if (gallery is not None) else 0.0
+                # Scale position distance to 0-1 (half frame width ≈ 750 px).
+                POS_SCALE = 750.0
+
+                # Pre-compute embedding similarities for unknown detections if gallery active.
+                # embed_sims[uki][pid] = cosine similarity (0-1); higher = more similar.
+                embed_sims: list[dict[str, float]] = []
+                if gallery is not None and embed_cap is not None:
+                    # Read this frame once for all unknown detections.
+                    embed_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_data["frame"])
+                    ret_e, embed_frame = embed_cap.read()
+                    H_e, W_e = (embed_frame.shape[:2] if ret_e else (0, 0))
+                    for di in unknown_det_indices:
+                        p_e = persons[di]
+                        if ret_e:
+                            x1e = max(0, int(p_e["x1"]))
+                            y1e = max(0, int(p_e["y1"]))
+                            x2e = min(W_e, int(p_e["x2"]))
+                            y2e = min(H_e, int(p_e["y2"]))
+                            if x2e > x1e and y2e > y1e:
+                                crop_e = embed_frame[y1e:y2e, x1e:x2e]
+                                sims = {pid: gallery.similarity(crop_e, pid) for pid in PLAYER_IDS}
+                            else:
+                                sims = {pid: 0.0 for pid in PLAYER_IDS}
+                        else:
+                            sims = {pid: 0.0 for pid in PLAYER_IDS}
+                        embed_sims.append(sims)
+                else:
+                    # No gallery: fill with zeros so the cost formula degrades cleanly.
+                    embed_sims = [{pid: 0.0 for pid in PLAYER_IDS} for _ in unknown_det_indices]
+
+                n_unk = len(unknown_det_indices)
+                n_free = len(free_player_indices)
+                if n_unk > 0 and n_free > 0:
+                    cost = np.full((n_unk, n_free), 1e9, dtype=float)
+                    for uki, di in enumerate(unknown_det_indices):
+                        p = persons[di]
+                        det = np.array([p["cx"], p["cy"]], dtype=float)
+                        p_color = p.get("color_hsv")
+                        uki_sims = embed_sims[uki]  # pid -> similarity (0-1)
+                        for fki, pi in enumerate(free_player_indices):
+                            pid = PLAYER_IDS[pi]
+                            ref = player_pos.get(pid)
+                            if ref is None:
+                                continue
+                            dist = float(np.linalg.norm(det - ref))
+                            absent = frames_missing.get(pid, 0)
+                            max_dist = MOVE_PX_PER_FRAME * max(1, absent + 1)
+                            if dist > max_dist:
+                                continue  # forbidden — leave as 1e9
+                            pos_cost = min(dist / POS_SCALE, 1.0)
+                            # Base appearance blend: position + colour.
+                            if p_color and pid in player_color_ref:
+                                c_cost = _color_distance(p_color, player_color_ref[pid])
+                                app_cost = (1.0 - COLOR_WEIGHT) * pos_cost + COLOR_WEIGHT * c_cost
+                            else:
+                                app_cost = pos_cost
+                            # Blend in DINOv2 embedding similarity (1 - sim = cost).
+                            if EMBED_WEIGHT > 0.0 and gallery is not None and gallery.has_enrollment(pid):
+                                embed_cost = 1.0 - uki_sims.get(pid, 0.0)
+                                cost[uki, fki] = (1.0 - EMBED_WEIGHT) * app_cost + EMBED_WEIGHT * embed_cost
+                            else:
+                                cost[uki, fki] = app_cost
+
+                    row_ind, col_ind = linear_sum_assignment(cost)
+                    for ri, ci in zip(row_ind, col_ind):
+                        if cost[ri, ci] < 1e8:
+                            di = unknown_det_indices[ri]
+                            pid = PLAYER_IDS[free_player_indices[ci]]
+                            per_frame_assigned[di] = pid
+                            # Extend the running H-ID map with this newly resolved track.
+                            hid = persons[di].get("human_track_id")
+                            if hid:
+                                running_hid_map[hid] = pid
+                            # Strategy B: enroll this crop into the gallery so that future
+                            # appearances of this player are matched by visual similarity.
+                            if gallery is not None and embed_cap is not None:
+                                # embed_frame was captured above for this frame; reuse it.
+                                p_enr = persons[di]
+                                if ret_e:
+                                    x1r = max(0, int(p_enr["x1"]))
+                                    y1r = max(0, int(p_enr["y1"]))
+                                    x2r = min(W_e, int(p_enr["x2"]))
+                                    y2r = min(H_e, int(p_enr["y2"]))
+                                    if x2r > x1r and y2r > y1r:
+                                        gallery.enroll(pid, embed_frame[y1r:y2r, x1r:x2r])
 
         # Update rolling positions for assigned players (EMA); age unassigned ones.
         assigned_pids = set(per_frame_assigned.values())
@@ -678,10 +955,11 @@ def identify_players(
         for pid in PLAYER_IDS:
             if pid not in assigned_pids:
                 frames_missing[pid] += 1
-                # If stale for too long, reset to calibration anchor so the player
-                # can be re-acquired when they re-enter the frame.
-                if frames_missing[pid] > MAX_MISSING_FR and pid in calib_anchor:
-                    player_pos[pid] = calib_anchor[pid].copy()
+                # Strategy A: do NOT snap to calibration anchor when a player is
+                # missing too long.  Snapping to a stale anchor causes ghost assignments
+                # when a player re-enters far from that anchor.  Instead, keep the
+                # last-known position and let the growing max_dist gate handle
+                # re-acquisition naturally.
 
         # Count genuinely unresolvable detections (all 4 slots occupied = extra persons)
         for di in range(n_det):
@@ -698,23 +976,30 @@ def identify_players(
             **frame_data,
             "persons": enriched_persons,
         })
-    cap.release()
+    # (cap was opened and released inside the use_llm block above)
+    if embed_cap is not None:
+        embed_cap.release()
 
     if unresolved_count:
         print(f"\n  {unresolved_count} detections could not be assigned a player_id "
               "(no track in map and centroid fallback failed).")
 
     # --- Write output JSON ---
-    output = {
+    output: dict = {
         "players": {pid: {"name": PLAYERS[pid]["name"]} for pid in PLAYER_IDS},
-        "track_map": track_map,
-        "calibration": {
+        "frames": enriched_frames,
+    }
+    if use_llm:
+        output["track_map"] = track_map
+        output["track_map_extended"] = running_hid_map  # full map after propagation
+        output["calibration"] = {
             "frames_sampled": len(calib_frames),
             "frames_used": len(calib_results),
             "consensus_threshold": CONSENSUS_THRESHOLD,
-        },
-        "frames": enriched_frames,
-    }
+        }
+    else:
+        output["mode"] = "heuristic"
+        output["track_map_extended"] = running_hid_map
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(output, indent=2))
     print(f"\nIdentified JSON written: {output_path}  ({output_path.stat().st_size / 1024:.1f} KB)")
@@ -732,7 +1017,13 @@ def _render_identified(
     enriched_frames: list[dict],
     render_path: Path,
 ) -> None:
-    """Render the source video with coloured bounding boxes and player names."""
+    """Render video with per-person bounding boxes, H-ID, P-ID, and colour swatch.
+
+    Each person gets:
+      - A bounding box in the assigned player's colour.
+      - A filled label tag: "{h_id} -> {pid} {name}".
+      - A small colour swatch showing the detected torso HSV from pass 1.
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video for render: {video_path}")
@@ -741,8 +1032,7 @@ def _render_identified(
     fps   = cap.get(cv2.CAP_PROP_FPS)
 
     render_path.parent.mkdir(parents=True, exist_ok=True)
-    # avc1 (H.264) triggers h264_v4l2m2m probe on Linux which always fails on
-    # x86 — go straight to mp4v (MPEG-4 Part 2), universally available via FFmpeg.
+    # mp4v avoids the h264_v4l2m2m probe failure on x86 Linux.
     writer = cv2.VideoWriter(
         str(render_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h_dim)
     )
@@ -755,6 +1045,8 @@ def _render_identified(
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     idx = 0
+    SWATCH_W  = 14   # width/height of the detected-colour square
+    LABEL_GAP = 4    # gap between text and swatch inside the tag
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -763,17 +1055,54 @@ def _render_identified(
         fd = frame_lookup.get(idx)
         if fd:
             for p in fd["persons"]:
-                pid = p.get("player_id")
+                pid  = p.get("player_id")
+                h_id = p.get("human_track_id") or "?"
                 color = _PLAYER_COLORS.get(pid, _UNKNOWN_COLOR)
-                name = PLAYERS[pid]["name"] if pid else (p.get("human_track_id") or "?")
-                label = f"{pid} {name}" if pid else name
-                # Draw label at top-centre of the bounding box: black shadow then coloured text
-                lx = int(p["cx"]) - 2
-                ly = max(int(p["y1"]) - 6, 12)
-                cv2.putText(frame, label, (lx + 1, ly + 1),
-                            FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS + 1, cv2.LINE_AA)
-                cv2.putText(frame, label, (lx, ly),
-                            FONT, FONT_SCALE, color, FONT_THICKNESS, cv2.LINE_AA)
+                name  = PLAYERS[pid]["name"] if pid else "?"
+
+                x1, y1 = int(p["x1"]), int(p["y1"])
+                x2, y2 = int(p["x2"]), int(p["y2"])
+
+                # Bounding box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), BOX_THICKNESS + 1)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, BOX_THICKNESS)
+
+                # Build label: "{h_id} -> {pid} {name}" or "{h_id} -> ?"
+                label = f"{h_id} -> {pid} {name}" if pid else f"{h_id} -> ?"
+                (tw, th), _ = cv2.getTextSize(label, FONT, FONT_SCALE, FONT_THICKNESS)
+
+                # Tag background: label width + gap + swatch square
+                tag_w = tw + LABEL_PAD * 2 + LABEL_GAP + SWATCH_W
+                tag_y0 = max(y1 - th - LABEL_PAD * 2, 0)
+                cv2.rectangle(frame, (x1, tag_y0), (x1 + tag_w, y1), color, cv2.FILLED)
+
+                # Label text in black on the coloured background
+                cv2.putText(
+                    frame, label,
+                    (x1 + LABEL_PAD, y1 - LABEL_PAD),
+                    FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS, cv2.LINE_AA,
+                )
+
+                # Detected-colour swatch (torso HSV from pass 1)
+                if p.get("color_hsv"):
+                    h_val = min(int(round(p["color_hsv"][0])), 179)
+                    s_val = min(int(round(p["color_hsv"][1])), 255)
+                    # Floor at 50 so dark swatches are visible but still look dark.
+                    v_val = max(int(round(p["color_hsv"][2])), 50)
+                    bgr = cv2.cvtColor(
+                        np.array([[[h_val, s_val, v_val]]], dtype=np.uint8),
+                        cv2.COLOR_HSV2BGR,
+                    )[0][0].tolist()
+                    sx1 = x1 + tw + LABEL_PAD * 2 + LABEL_GAP
+                    sx2 = sx1 + SWATCH_W
+                    sy1 = tag_y0 + 2
+                    sy2 = y1 - 2
+                    # thin black border then filled swatch
+                    cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), (0, 0, 0), 1)
+                    cv2.rectangle(
+                        frame, (sx1 + 1, sy1 + 1), (sx2 - 1, sy2 - 1),
+                        (int(bgr[0]), int(bgr[1]), int(bgr[2])), cv2.FILLED,
+                    )
 
             ball = fd.get("ball")
             if ball:
@@ -785,7 +1114,6 @@ def _render_identified(
         idx += 1
         if idx % 150 == 0:
             print(f"  rendered frame {idx}/{total}")
-
     writer.release()
     cap.release()
     print(f"Render written: {render_path}  ({render_path.stat().st_size / 1024 / 1024:.1f} MB)")
@@ -793,22 +1121,41 @@ def _render_identified(
 
 @click.command("identify")
 @click.option("--video", "-v", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Source video file.")
-@click.option("--detections", "-d", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Pass-1 detections JSON (from beach annotate).")
-@click.option("--output", "-o", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Output path for identified JSON.")
-@click.option("--render-identified", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Optional: render identified video to this path.")
-@click.option("--sample-window", type=float, default=0.30, show_default=True, help="Fraction of video to sample calibration frames from (default: 0.30).")
-def identify_cmd(video, detections, output, render_identified, sample_window):
-    """Pass 2: Identify players (P1-P4) from anonymous track IDs using Gemini."""
+@click.option("--detections", "-d", default=None, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Pass-1 detections JSON (default: <video_stem>_detections.json).")
+@click.option("--output", "-o", default=None, type=click.Path(dir_okay=False, path_type=Path), help="Output path for identified JSON (default: <video_stem>_identified.json).")
+@click.option("--render-identified", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Optional: render annotated video to this path.")
+@click.option("--sample-window", type=float, default=0.30, show_default=True, help="(LLM only) Fraction of video to sample calibration frames from.")
+@click.option("--no-llm", is_flag=True, default=False, help="Skip Gemini; identify via proximity + colour only (no API key required).")
+@click.option("--embeddings", is_flag=True, default=False, help="Use DINOv2 visual embeddings (Strategy B) to improve re-identification accuracy.")
+def identify_cmd(video, detections, output, render_identified, sample_window, no_llm, embeddings):
+    """Pass 2: Assign P1-P4 to detections via Gemini (default) or heuristic (--no-llm)."""
     import os
 
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not api_key:
-        raise click.ClickException("GOOGLE_API_KEY environment variable not set.")
+    detections_path = detections or video.with_name(video.stem + "_detections.json")
+    output_path = output or video.with_name(video.stem + "_identified.json")
+
+    if not detections_path.exists():
+        raise click.ClickException(
+            f"Detections file not found: {detections_path}\n"
+            "Run 'beach track' first, or supply --detections explicitly."
+        )
+
+    use_llm = not no_llm
+    api_key = ""
+    if use_llm:
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        if not api_key:
+            raise click.ClickException(
+                "GOOGLE_API_KEY environment variable not set. "
+                "Pass --no-llm to run without Gemini."
+            )
     identify_players(
         video_path=video,
-        detections_path=detections,
-        output_path=output,
+        detections_path=detections_path,
+        output_path=output_path,
         render_path=render_identified,
         sample_window_frac=sample_window,
         api_key=api_key,
+        use_llm=use_llm,
+        use_embeddings=embeddings,
     )
