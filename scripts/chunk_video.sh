@@ -41,7 +41,7 @@ INPUT=""
 START="03:20"
 CHUNK_DURATION=0
 SCALE="none"
-CROP="33:15:10:10"  # GoPro overhead court cam (1920x1440) → 1536x748
+CROP="33:15:0:0"  # GoPro overhead court cam (1920x1440) default: crop 33% top, 15% bottom, no side crop
 OUTDIR="./chunks"
 PREFIX="GH021569_court"
 
