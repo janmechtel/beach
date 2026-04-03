@@ -796,6 +796,34 @@ def _trim_evenly(frame_indices: list[int], max_count: int) -> list[int]:
     return [frame_indices[int(i)] for i in picks]
 
 
+def select_first_frame(frames: list[dict]) -> list[dict]:
+    """Return a single-element list with the earliest clean 4-player frame.
+
+    Selection priority:
+    1. Earliest frame with exactly 4 persons, all with unique non-null H-IDs.
+    2. Earliest frame with any persons (fallback).
+    3. Empty list when there are no detections at all.
+
+    Used by ``beach annotate-gt --first-frame`` and ``beach run`` to get a
+    minimal GT seed for the no-LLM rolling tracker.
+    """
+    frames_sorted = sorted(frames, key=lambda f: int(f["frame"]))
+
+    for f in frames_sorted:
+        persons = f.get("persons", [])
+        if len(persons) == 4:
+            hids = [p.get("human_track_id") for p in persons]
+            if all(h is not None for h in hids) and len(set(hids)) == 4:
+                return [f]
+
+    # Fallback: first frame with any persons
+    for f in frames_sorted:
+        if f.get("persons"):
+            return [f]
+
+    return []
+
+
 def select_keyframes(
     frames: list[dict],
     identified_frames: list[dict],
@@ -1121,6 +1149,7 @@ def run_annotation_server(state: dict, output_path: Path, port: int) -> None:
 )
 @click.option("--no-llm", is_flag=True, default=False, help="Identify strategy was --no-llm (affects identified file lookup).")
 @click.option("--embeddings", is_flag=True, default=False, help="Identify strategy was --no-llm --embeddings.")
+@click.option("--first-frame", "first_frame", is_flag=True, default=False, help="Annotate only the first clean 4-player frame (fast seed for --no-llm --seed-gt / beach run).")
 @click.option("--port", type=int, default=7780, show_default=True)
 @click.option("--fps", type=float, default=50.0, show_default=True)
 def annotate_gt_cmd(
@@ -1131,6 +1160,7 @@ def annotate_gt_cmd(
     video: Path,
     no_llm: bool,
     embeddings: bool,
+    first_frame: bool,
     port: int,
     fps: float,
 ) -> None:
@@ -1182,9 +1212,13 @@ def annotate_gt_cmd(
     players_data = _load_or_init_players(players)
     players_ui, player_colors_rgb = _build_players_config(players_data)
 
-    selected = select_keyframes(det_frames, id_frames, fps=fps, interval_sec=2.0)
-    if existing_gt is not None:
-        selected = include_existing_frames(selected, det_frames, existing_gt, only_confirmed=True)
+    if first_frame:
+        selected = select_first_frame(det_frames)
+        print("First-frame mode: annotating 1 seed frame.")
+    else:
+        selected = select_keyframes(det_frames, id_frames, fps=fps, interval_sec=2.0)
+        if existing_gt is not None:
+            selected = include_existing_frames(selected, det_frames, existing_gt, only_confirmed=True)
     keyframes = preseed_keyframes(selected, id_frames, player_colors_rgb)
 
     cap = cv2.VideoCapture(str(video))

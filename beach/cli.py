@@ -2,6 +2,7 @@
 
 Commands
 --------
+beach run           — Full pipeline: track → annotate first frame → identify → render.
 beach track         — Pass 1: YOLO person + ball detection with ByteTrack IDs.
 beach identify      — Pass 2: Player identification via Gemini or heuristic.
 beach analyze       — Pass 3: Action extraction via Gemini.
@@ -19,6 +20,7 @@ import click
 
 # Subcommand modules — imported here so cli.add_command works.
 from beach.track import track_cmd
+from beach.run import run_cmd
 from beach.identify import identify_cmd
 from beach.analyze import analyze_cmd
 from beach.compare import compare_cmd
@@ -36,6 +38,7 @@ def cli() -> None:
 
 # Wire in subcommands from their respective modules.
 cli.add_command(track_cmd)
+cli.add_command(run_cmd)
 cli.add_command(identify_cmd)
 cli.add_command(analyze_cmd)
 cli.add_command(compare_cmd)
