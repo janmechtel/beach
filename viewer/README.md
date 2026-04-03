@@ -1,6 +1,6 @@
 # Beach Volleyball Analysis — Viewer & Pipeline
 
-This repo analyses beach volleyball video footage: detecting players, identifying them by name, detecting ball contacts and actions, and presenting results in a React viewer with a built-in ground-truth editor.
+This repo analyses beach volleyball video footage: detecting players, identifying them by name, tracking the ball, detecting rallies, and presenting results in a React viewer with a built-in ground-truth editor.
 
 ---
 
@@ -13,15 +13,13 @@ uv sync
 # 2. Build the viewer
 cd viewer && npm install && npm run build && cd ..
 
-# 3a. Single command — track, annotate one frame, identify, render
-uv run beach run --video videos/GH021569_court_001.mp4
-# → opens browser to assign P1–P4, then produces *_rendered.mp4
+# 3a. Player tracking — track, annotate one seed frame, identify
+uv run beach run --video videos/GH021569_court.mp4
+# → opens browser to assign P1–P4, then produces *_identified_heuristic.json
 
-# 3b. Or run each step individually (see pipeline below)
-uv run beach track   --video videos/GH021569_court_001.mp4
-uv run beach annotate-gt --video videos/GH021569_court_001.mp4 --first-frame
-uv run beach identify --video videos/GH021569_court_001.mp4 --no-llm --seed-gt videos/GH021569_court_001_gt.json
-uv run beach render  --video videos/GH021569_court_001.mp4 -o videos/GH021569_court_001_identified_heuristic.json
+# 3b. Analytics pipeline — ball tracking, rally detection, combined render
+uv run beach analytics --video videos/GH021569_court.mp4
+# → *_ball.csv  *_merged.json  *_rallies.json  *_analytics.mp4
 
 # 4. Open the action viewer
 uv run beach serve
@@ -32,52 +30,73 @@ uv run beach serve
 
 ## Pipeline — file flow
 
-### Fast path — `beach run` (single command)
+Three pipelines produce data for the viewer. The **player pipeline** must run before **analytics** (analytics needs the identified player data). **Actions** can run independently.
 
-```bash
-beach run --video clip.mp4
-# produces: clip_detections.json  clip_gt.json  clip_identified_heuristic.json  clip_rendered.mp4
-
-# skip already-done steps when iterating:
-beach run --video clip.mp4 --skip-track --skip-annotate
-```
-
-The `--skip-track` and `--skip-annotate` flags let you re-run only identify + render after tweaking things, without waiting for YOLO or opening the browser again.
-
-### Full pipeline (individual steps)
-
-A single clip passes through these stages in order:
+### Player pipeline
 
 ```
-raw video
+beach track       →  *_detections.json      persons detected & tracked (anonymous H1…Hn)
     │
-    ▼
-[1] beach track          → *_detections.json   (+ optional *_annotated.mp4)
-    │
-    ├────────────────────────────────────────────────────────────────┐
-    ▼                                                                │
-[2] beach identify       → *_identified.json                        │
-    │   (LLM: Gemini calibration)                                    │
-    │   (--no-llm: colour templates → auto-seed)                     │
-    │   (--no-llm --seed-gt: needs *_gt.json ◄──────────────────┐   │
-    │                                                            │   │
-    │                                         beach annotate-gt ┘   │
-    │                                         (browser UI, uses ─────┘
-    │                                          detections + identified)
-    │                                         → *_gt.json
-    │                                         beach eval-id
-    │                                         (scores identified vs gt)
-    │
-    ├──► beach render     → *_rendered.mp4  (re-render overlay without re-running)
-    │
-    ▼
-[3] beach analyze        → *_<model>_<ts>.json  (action events)
-    │
-    ├──► beach compare   (scores action JSON vs reference)
-    │
-    ▼
-[4] beach serve          (viewer + editor served at localhost:8080)
+    └─ beach identify  →  *_identified*.json    players identified (H-IDs → P1–P4)
+            │
+            └─ beach render  →  *_rendered.mp4  players rendered onto video
 ```
+
+> **Shortcut — `beach run`** = track + identify + render, opening a browser seed UI before identify
+>
+> ```bash
+> beach run --video clip.mp4
+> beach run --video clip.mp4 --skip-track --skip-annotate  # re-run only identify + render
+> ```
+
+### Ball & Rallies pipeline
+
+Requires `*_identified_heuristic.json` from the player pipeline.
+
+```
+beach ball-track   →  *_ball.csv          ball tracked (VballNet)
+    │
+    ├─ beach detect-rallies  →  *_rallies.json     rallies detected
+    │           │
+    │           └──────────────────────────────────┐
+    │                                              ├─ beach merge  →  *_merged.json   everything merged
+    └──────────────────────────────────────────────┤                        │
+                                                   │           beach analytics-render  →  *_analytics.mp4
+beach identify  →  *_identified*.json  ────────────┘
+```
+
+`beach merge` is the convergence point — it joins identified players, ball positions, and rally windows into a single file. `beach analytics-render` then only needs that one file.
+
+> **Shortcut — `beach analytics`** = ball-track + detect-rallies + merge + analytics-render
+>
+> ```bash
+> beach analytics --video clip.mp4
+> beach analytics --video clip.mp4 --skip-ball-track --skip-rallies  # reuse existing files
+> ```
+
+### Actions pipeline
+
+Independent — can run at any time on the raw or rendered video.
+
+```
+beach analyze  →  *_actions.json    actions analyzed via Gemini
+```
+
+### Ground truth
+
+```
+beach annotate-gt  →  *_gt.json    players annotated frame-by-frame (browser UI)
+    │
+    └─ beach eval-id               identification accuracy scored vs GT
+```
+
+---
+
+```
+beach serve  →  viewer at localhost:8080
+```
+
+### Individual steps
 
 ### Pass 1 — `beach track`
 
@@ -112,11 +131,11 @@ For each detected person the torso region (rows 20–65 % of the bounding box) i
 ```
 
 ```bash
-beach track --video videos/GH021569_court_001.mp4
-# → videos/GH021569_court_001_detections.json
+beach track --video videos/GH021569_court.mp4
+# → videos/GH021569_court_detections.json
 
-beach track --video videos/GH021569_court_001.mp4 --render-video videos/output/debug.mp4
-# renders coloured H-ID boxes + ball circle (slow, for debugging)
+beach track --video videos/GH021569_court.mp4 --render-video videos/output/debug.mp4
+# renders coloured H-ID boxes (slow, for debugging)
 ```
 
 ---
@@ -164,10 +183,102 @@ After calibration, all frames are processed with a Hungarian cost-matrix assignm
 **Outputs:** `*_identified.json` (LLM), `*_identified_heuristic.json` (heuristic), `*_identified_embeddings.json` (embeddings)
 
 ```bash
-beach identify --video videos/GH021569_court_001.mp4
-beach identify --video videos/GH021569_court_001.mp4 --no-llm
-beach identify --video videos/GH021569_court_001.mp4 --no-llm --embeddings
-beach identify --video videos/GH021569_court_001.mp4 --render-identified videos/output/debug_identified.mp4
+beach identify --video videos/GH021569_court.mp4
+beach identify --video videos/GH021569_court.mp4 --no-llm
+beach identify --video videos/GH021569_court.mp4 --no-llm --embeddings
+beach identify --video videos/GH021569_court.mp4 --render-identified videos/output/debug_identified.mp4
+```
+
+---
+
+### Analytics pipeline — `beach ball-track` → `beach merge` → `beach detect-rallies` → `beach analytics-render`
+
+#### `beach ball-track`
+
+Runs the VballNet sequence model (from `fast-volleyball-tracking-inference`) on the video and writes a ball position CSV. Delegates to that repo's own venv via subprocess — no extra Python deps needed in the `beach` venv.
+
+**Model:** `VballNetV2_seq9_grayscale_320_h288_w512.onnx` (default). Override with `--model`.
+
+**Outputs:** `*_ball.csv`
+
+```
+Frame, Visibility, X, Y
+0,     0,          -1, -1
+1,     1,          1068, 310
+...
+```
+
+Coordinates are in original video pixel space. `Visibility=0` means no detection that frame.
+
+```bash
+beach ball-track --video videos/GH021569_court.mp4
+# → videos/GH021569_court_ball.csv
+
+beach ball-track --video videos/GH021569_court.mp4 --skip-existing
+# skip if CSV already present
+```
+
+#### `beach merge`
+
+Joins `*_identified_heuristic.json` (player bboxes with P1–P4 labels) and `*_ball.csv` (ball positions) into a single per-frame JSON. Also computes `closest_player_id` — the P1–P4 player whose foot point (bottom-centre of bbox) is nearest to the ball, within 400 px.
+
+**Outputs:** `*_merged.json`
+
+```jsonc
+{
+  "fps": 50.0,
+  "total_frames": 14200,
+  "frames": [
+    {
+      "frame": 42,
+      "timestamp_sec": 0.84,
+      "ball": { "x": 620.0, "y": 310.0, "visible": true },
+      "closest_player_id": "P1",
+      "players": [
+        { "player_id": "P1", "cx": 400.0, "cy": 600.0,
+          "x1": 350.0, "y1": 320.0, "x2": 450.0, "y2": 680.0 },
+        ...
+      ]
+    }
+  ]
+}
+```
+
+```bash
+beach merge --video videos/GH021569_court.mp4
+```
+
+#### `beach detect-rallies`
+
+Groups ball-visible frames from `*_merged.json` into rally windows. Pauses longer than `--max-pause` seconds split rallies; windows shorter than `--min-rally` seconds are discarded. Each window is extended by `--extension` seconds on both ends.
+
+**Outputs:** `*_rallies.json`
+
+```jsonc
+[
+  { "rally_id": 0, "start_frame": 0,   "end_frame": 494,  "start_sec": 0.0,  "end_sec": 9.9  },
+  { "rally_id": 1, "start_frame": 524, "end_frame": 784,  "start_sec": 10.5, "end_sec": 15.7 },
+  ...
+]
+```
+
+```bash
+beach detect-rallies --video videos/GH021569_court.mp4
+beach detect-rallies --video videos/GH021569_court.mp4 --max-pause 3.0 --min-rally 2.0
+```
+
+#### `beach analytics-render`
+
+Renders `*_merged.json` + `*_rallies.json` as an overlay on the source video. Every frame shows:
+
+- **Player bounding boxes** — coloured by P1–P4 (`P1`=white, `P2`=orange, `P3`=green, `P4`=yellow-green)
+- **Closest player** — gold/thicker box + gold dot above the label
+- **Ball** — bright yellow circle + crosshair
+- **Rally banner** — green `RALLY N` strip across the top during a rally; yellow `START` / `END` flash at transitions (~1.2 s fade)
+
+```bash
+beach analytics-render --video videos/GH021569_court.mp4
+# → videos/GH021569_court_analytics.mp4
 ```
 
 ---
@@ -256,6 +367,8 @@ The viewer lists videos from the left selector, shows the video + timeline of ac
 beach serve                          # port 8080
 beach serve --port 9000 --reload     # custom port + hot-reload Python on save
 ```
+
+---
 
 ---
 
@@ -352,16 +465,51 @@ This closes the loop: `annotate-gt` creates the frame-level player GT; the viewe
 
 ## CLI reference
 
+### Primary steps — player pipeline
 ```
-beach run           Full pipeline: track → annotate first frame → identify → render
-beach track         Pass 1: YOLO person + ball detection, ByteTrack IDs → *_detections.json
-beach identify      Pass 2: H-ID → P-ID via Gemini or heuristic → *_identified*.json
-beach annotate-gt   Browser UI for frame-level GT annotation → *_gt.json
-                      --first-frame   one seed frame only (fast, for beach run)
-beach eval-id       Score identified vs GT (accuracy, swaps, confusion matrix)
-beach eval-frame    Score single-frame identification strategies vs GT
-beach render        Re-render identified JSON onto source video → *_rendered.mp4
-beach analyze       Pass 3: action extraction via Gemini → action JSON
-beach compare       Score action JSON vs reference (timestamp matching)
-beach serve         Dev server for the viewer (localhost:8080)
+beach track            Persons detected & tracked (YOLO + ByteTrack) → *_detections.json
+beach identify         Players identified (H-IDs → P1–P4, Gemini or heuristic) → *_identified*.json
+beach render           Players rendered onto video → *_rendered.mp4
+```
+
+### Primary steps — analytics pipeline
+```
+beach ball-track       Ball tracked (VballNet) → *_ball.csv
+beach detect-rallies   Rallies detected (from *_ball.csv) → *_rallies.json
+beach merge            Players + ball + rallies merged → *_merged.json
+beach analytics-render Analytics rendered onto video → *_analytics.mp4
+                         (players + ball + rally markers overlay)
+```
+
+### Primary steps — actions pipeline
+```
+beach analyze          Actions analyzed via Gemini → *_actions.json
+beach compare          Action JSON scored vs reference (timestamp matching)
+```
+
+### Primary steps — ground truth
+```
+beach annotate-gt      Players annotated frame-by-frame (browser UI) → *_gt.json
+                         --first-frame   one seed frame only (used by beach run)
+beach eval-id          Identification accuracy scored vs GT (swaps, confusion matrix)
+beach eval-frame       Single-frame identification strategies scored vs GT
+```
+
+### Shortcuts
+```
+beach run              Player pipeline: track + identify + render (+ browser seed UI)
+                         --skip-track      reuse existing *_detections.json
+                         --skip-annotate   skip browser seed UI
+beach analytics        Analytics pipeline: ball-track + detect-rallies + merge + analytics-render
+                         --skip-ball-track  reuse existing *_ball.csv
+                         --skip-rallies     reuse existing *_rallies.json
+                         --skip-merge       reuse existing *_merged.json
+                         --skip-render      data files only, no video output
+```
+
+### Viewer
+```
+beach serve            Viewer at localhost:8080
+                         --port N      custom port
+                         --reload      hot-reload Python on save
 ```

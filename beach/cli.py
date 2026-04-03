@@ -2,16 +2,21 @@
 
 Commands
 --------
-beach run           — Full pipeline: track → annotate first frame → identify → render.
-beach track         — Pass 1: YOLO person + ball detection with ByteTrack IDs.
-beach identify      — Pass 2: Player identification via Gemini or heuristic.
-beach analyze       — Pass 3: Action extraction via Gemini.
-beach compare       — Compare candidate action JSON against ground truth.
-beach annotate-gt   — Build frame-level ground truth for identification evaluation.
-beach eval-id       — Score an identified JSON against ground truth.
-beach eval-frame    — Score single-frame identification strategies against ground truth.
-beach serve         — Start the dev server for the viewer.
-beach render        — Render identified JSON overlay onto source video.
+beach run              — Full pipeline: track → annotate first frame → identify → render.
+beach track            — Pass 1: YOLO person + ball detection with ByteTrack IDs.
+beach identify         — Pass 2: Player identification via Gemini or heuristic.
+beach analyze          — Pass 3: Action extraction via Gemini.
+beach compare          — Compare candidate action JSON against ground truth.
+beach annotate-gt      — Build frame-level ground truth for identification evaluation.
+beach eval-id          — Score an identified JSON against ground truth.
+beach eval-frame       — Score single-frame identification strategies against ground truth.
+beach serve            — Start the dev server for the viewer.
+beach render           — Render identified JSON overlay onto source video.
+beach ball-track       — Run VballNet ball tracking → *_ball.csv.
+beach merge            — Merge player bboxes + ball → *_merged.json.
+beach detect-rallies   — Detect rally timings from merged JSON → *_rallies.json.
+beach analytics-render — Render analytics overlay (players + ball + rally markers).
+beach analytics        — Full analytics pipeline (ball-track → merge → rallies → render).
 """
 
 from __future__ import annotations
@@ -29,6 +34,11 @@ from beach.eval_id import eval_id_cmd
 from beach.serve import serve_cmd
 from beach.render import render_cmd
 from beach.eval_frame import eval_frame_cmd
+from beach.ball_track import ball_track_cmd
+from beach.merge import merge_cmd
+from beach.rallies import detect_rallies_cmd
+from beach.analytics_render import analytics_render_cmd
+from beach.analytics import analytics_cmd
 
 
 @click.group()
@@ -47,3 +57,8 @@ cli.add_command(eval_id_cmd)
 cli.add_command(serve_cmd)
 cli.add_command(render_cmd)
 cli.add_command(eval_frame_cmd)
+cli.add_command(ball_track_cmd)
+cli.add_command(merge_cmd)
+cli.add_command(detect_rallies_cmd)
+cli.add_command(analytics_render_cmd)
+cli.add_command(analytics_cmd)
