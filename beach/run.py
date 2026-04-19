@@ -133,10 +133,16 @@ def _annotate_first_frame(
     help="Input video file.",
 )
 @click.option(
+    "--render",
+    is_flag=True,
+    default=False,
+    help="Render an output video with overlaid boxes (default: off).",
+)
+@click.option(
     "--render-output", "-r",
     default=None,
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Output rendered video path (default: <stem>_rendered.mp4 next to video).",
+    help="Output rendered video path (default: <stem>_rendered.mp4 next to video). Implies --render.",
 )
 @click.option(
     "--skip-track",
@@ -166,6 +172,7 @@ def _annotate_first_frame(
 )
 def run_cmd(
     video: Path,
+    render: bool,
     render_output: Optional[Path],
     skip_track: bool,
     skip_annotate: bool,
@@ -178,6 +185,7 @@ def run_cmd(
     gt_path          = video.with_name(video.stem + "_gt.json")
     identified_path  = video.with_name(video.stem + "_identified_heuristic.json")
     render_path      = render_output or video.with_name(video.stem + "_rendered.mp4")
+    do_render        = render or (render_output is not None)
 
     # ------------------------------------------------------------------
     # Step 1: Track
@@ -216,8 +224,13 @@ def run_cmd(
     # ------------------------------------------------------------------
     # Step 4: Render
     # ------------------------------------------------------------------
-    print(f"\n[4/4] render    — overlay boxes → {render_path.name}")
-    identified_data = json.loads(identified_path.read_text())
-    _render_identified(video, identified_data["frames"], render_path)
+    if do_render:
+        print(f"\n[4/4] render    — overlay boxes → {render_path.name}")
+        identified_data = json.loads(identified_path.read_text())
+        _render_identified(video, identified_data["frames"], render_path)
+    else:
+        print(f"[4/4] render    — skipped (use --render to enable)")
 
-    print(f"\nDone.\n  Detections : {detections_path}\n  GT seed    : {gt_path}\n  Identified : {identified_path}\n  Rendered   : {render_path}")
+    print(f"\nDone.\n  Detections : {detections_path}\n  GT seed    : {gt_path}\n  Identified : {identified_path}")
+    if do_render:
+        print(f"  Rendered   : {render_path}")

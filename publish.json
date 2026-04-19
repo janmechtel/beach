@@ -1,0 +1,16 @@
+{
+  "stems": {
+    "first30": {
+      "json_patterns": [
+        "first30_Manual.json",
+        "first30_gemini-2.5-pro_seeded_run*.json"
+      ]
+    },
+    "GH021569": {
+      "json_patterns": [
+        "GH021569_court_identified.json",
+        "GH021569_court_identified_1min_gemini-2.5-pro_seeded_run*.json"
+      ]
+    }
+  }
+}

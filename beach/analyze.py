@@ -39,6 +39,7 @@ from pathlib import Path
 
 import click
 from beach.compare import compare, DEFAULT_TOL
+from beach.fix_player_ids import run_fix_player_ids
 from beach.models import Action
 from google import genai
 from google.genai import types
@@ -247,6 +248,9 @@ Do NOT add or remove any timestamps.
 """
 
 
+
+
+
 # ---------------------------------------------------------------------------
 # Gemini file cache
 # ---------------------------------------------------------------------------
@@ -448,7 +452,8 @@ def _convergence_report(all_runs: list[list[Action]], timestamps: list[float]) -
 @click.option("--annotated", "-a", is_flag=True, default=False, help="Use annotated video (P1-P4 labels drawn by annotate pipeline).")
 @click.option("--ref", "-r", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Reference JSON to compare each run against.")
 @click.option("--output-dir", "-o", type=click.Path(file_okay=False, writable=True, path_type=Path), default=Path("output"), show_default=True, help="Directory for output JSON files.")
-def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, output_dir):
+@click.option("--skip-fix", is_flag=True, default=False, help="Skip automatic fix-player-ids step after each run.")
+def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, output_dir, skip_fix):
     """Analyze volleyball actions in VIDEO using Gemini."""
     if input_file and auto_seed:
         raise click.ClickException("--input and --auto-seed are mutually exclusive")
@@ -470,7 +475,6 @@ def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, out
 
     players_data = load_players(players_path)
     client = genai.Client(api_key=API_KEY)
-    cache_path = output_dir / ".gemini_file_cache.json"
 
     default_video_path = Path("data/first30.mp4")
     annotated_video_path = Path("data/first30_annotated.mp4")
@@ -494,6 +498,10 @@ def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, out
         if not video_path.exists():
             raise click.ClickException(f"{video_path} not found.")
         annotated_prompt = False
+
+    # Store results alongside the input video file.
+    results_dir = video_path.parent
+    cache_path = results_dir / ".gemini_file_cache.json"
 
     # Load timestamps from --input when given; --auto-seed sets them after run 1.
     timestamps: list[float] | None = None
@@ -540,7 +548,7 @@ def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, out
         # Always include run number when running multiple runs or auto-seeding.
         run_tag = f"_run{run_idx + 1}" if (runs > 1 or auto_seed) else ""
         mode_tag = "_seeded" if timestamps is not None else ""
-        output_path = output_dir / f"{stem}_{model_tag}{mode_tag}{run_tag}_{ts_now}.json"
+        output_path = results_dir / f"{stem}_{model_tag}{mode_tag}{run_tag}_{ts_now}.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         output_data = [a.model_dump(exclude_none=False) for a in actions]
@@ -548,6 +556,15 @@ def analyze_cmd(video, players, input_file, auto_seed, runs, annotated, ref, out
         all_output_paths.append(output_path)
         print(f"\nFound {len(actions)} actions -> {output_path}")
         print(json.dumps(output_data, indent=2))
+
+        # Fix player IDs using touch ground-truth immediately after each run.
+        if not skip_fix:
+            print("\n--- fix-player-ids ---")
+            try:
+                run_fix_player_ids(video_path, llm_json=output_path)
+            except Exception as exc:
+                print(f"[fix-player-ids skipped] {exc}")
+            print("--- end fix-player-ids ---")
 
         # Compare against ground truth only when explicitly requested.
         if ref is not None:

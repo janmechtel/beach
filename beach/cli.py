@@ -17,6 +17,10 @@ beach merge            — Merge player bboxes + ball → *_merged.json.
 beach detect-rallies   — Detect rally timings from merged JSON → *_rallies.json.
 beach analytics-render — Render analytics overlay (players + ball + rally markers).
 beach analytics        — Full analytics pipeline (ball-track → merge → rallies → render).
+beach split-rallies    — Split video + merged JSON into per-rally clips + JSON slices.
+beach fix-player-ids   — Fix LLM player IDs in action JSON using touches.json ground truth.
+beach stitch-rallies   — Combine per-rally *_fixed.json files into one full-video action JSON.
+beach publish          — Generate static viewer manifests; optionally upload to R2.
 """
 
 from __future__ import annotations
@@ -39,6 +43,10 @@ from beach.merge import merge_cmd
 from beach.rallies import detect_rallies_cmd
 from beach.analytics_render import analytics_render_cmd
 from beach.analytics import analytics_cmd
+from beach.split_rallies import split_rallies_cmd
+from beach.fix_player_ids import fix_player_ids_cmd
+from beach.stitch_rallies import stitch_rallies_cmd
+from beach.publish import publish_cmd
 
 
 @click.group()
@@ -48,6 +56,8 @@ def cli() -> None:
 
 # Wire in subcommands from their respective modules.
 cli.add_command(track_cmd)
+cli.add_command(split_rallies_cmd)
+cli.add_command(fix_player_ids_cmd)
 cli.add_command(run_cmd)
 cli.add_command(identify_cmd)
 cli.add_command(analyze_cmd)
@@ -62,3 +72,6 @@ cli.add_command(merge_cmd)
 cli.add_command(detect_rallies_cmd)
 cli.add_command(analytics_render_cmd)
 cli.add_command(analytics_cmd)
+cli.add_command(stitch_rallies_cmd)
+
+cli.add_command(publish_cmd)

@@ -4,14 +4,14 @@ Requires 'beach run' (or 'beach identify --no-llm') to have been run first so
 that *_identified_heuristic.json already exists.
 
 ball-track and detect-rallies are independent of the player pipeline and run
-first; merge is the convergence point that joins everything.
+first; merge is the convergence point that joins everything and runs touch detection.
 
 Steps
 -----
-1. ball-track     — VballNet inference → *_ball.csv
-2. detect-rallies — ball visibility → *_rallies.json  (reads *_ball.csv only)
-3. merge          — players + ball + rallies → *_merged.json
-4. render         — overlay everything onto source video → *_analytics.mp4
+1. ball-track      — VballNet inference → *_ball.csv
+2. detect-rallies  — ball visibility → *_rallies.json  (reads *_ball.csv only)
+3. merge           — players + ball + rallies + touches → *_merged.json
+4. render          — overlay everything onto source video → *_analytics.mp4
 
 Use --skip-* flags to reuse existing intermediate files.
 
@@ -42,10 +42,15 @@ from beach.analytics_render import render_analytics
     help="Source video file.",
 )
 @click.option(
+    "--render",
+    is_flag=True, default=False,
+    help="Render an output video with analytics overlay (default: off).",
+)
+@click.option(
     "--output", "-o",
     default=None,
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Output rendered video (default: <video_stem>_analytics.mp4).",
+    help="Output rendered video (default: <video_stem>_analytics.mp4). Implies --render.",
 )
 @click.option(
     "--skip-ball-track",
@@ -65,7 +70,7 @@ from beach.analytics_render import render_analytics
 @click.option(
     "--skip-render",
     is_flag=True, default=False,
-    help="Skip the final render step (produce data files only).",
+    help="Deprecated: render is now off by default. Kept for backwards compatibility.",
 )
 @click.option(
     "--model",
@@ -75,6 +80,7 @@ from beach.analytics_render import render_analytics
 )
 def analytics_cmd(
     video: Path,
+    render: bool,
     output: Optional[Path],
     skip_ball_track: bool,
     skip_rallies: bool,
@@ -89,6 +95,7 @@ def analytics_cmd(
     merged_path  = video.with_name(video.stem + "_merged.json")
     render_path  = output or video.with_name(video.stem + "_analytics.mp4")
     identified   = video.with_name(video.stem + "_identified_heuristic.json")
+    do_render    = render or (output is not None)
 
     if not identified.exists():
         raise click.ClickException(
@@ -100,9 +107,9 @@ def analytics_cmd(
     # Step 1: Ball tracking
     # ------------------------------------------------------------------
     if skip_ball_track and ball_csv.exists():
-        print(f"[1/4] ball-track     — skipped (reusing {ball_csv.name})")
+        print(f"[1/5] ball-track     — skipped (reusing {ball_csv.name})")
     else:
-        print(f"\n[1/4] ball-track     — VballNet inference → {ball_csv.name}")
+        print(f"\n[1/5] ball-track     — VballNet inference → {ball_csv.name}")
         run_ball_tracking(
             video_path=video,
             output_csv=ball_csv,
@@ -120,9 +127,9 @@ def analytics_cmd(
     cap.release()
 
     if skip_rallies and rallies_path.exists():
-        print(f"[2/4] detect-rallies — skipped (reusing {rallies_path.name})")
+        print(f"[2/5] detect-rallies — skipped (reusing {rallies_path.name})")
     else:
-        print(f"\n[2/4] detect-rallies — ball visibility → {rallies_path.name}")
+        print(f"\n[2/5] detect-rallies — ball visibility → {rallies_path.name}")
         detect_rallies(
             ball_csv_path=ball_csv,
             output_path=rallies_path,
@@ -131,12 +138,12 @@ def analytics_cmd(
         )
 
     # ------------------------------------------------------------------
-    # Step 3: Merge  (convergence point: players + ball + rallies)
+    # Step 3: Merge  (players + ball + rallies + touch detection)
     # ------------------------------------------------------------------
     if skip_merge and merged_path.exists():
         print(f"[3/4] merge          — skipped (reusing {merged_path.name})")
     else:
-        print(f"\n[3/4] merge          — players + ball + rallies → {merged_path.name}")
+        print(f"\n[3/4] merge          — players + ball + rallies + touches → {merged_path.name}")
         build_merged(
             identified_path=identified,
             ball_csv_path=ball_csv if ball_csv.exists() else None,
@@ -147,8 +154,8 @@ def analytics_cmd(
     # ------------------------------------------------------------------
     # Step 4: Render
     # ------------------------------------------------------------------
-    if skip_render:
-        print(f"[4/4] render         — skipped")
+    if not do_render or skip_render:
+        print(f"[4/4] render         — skipped (use --render to enable)")
     else:
         print(f"\n[4/4] render         — analytics overlay → {render_path.name}")
         render_analytics(
@@ -160,6 +167,6 @@ def analytics_cmd(
     print(f"\nDone.")
     print(f"  Ball CSV    : {ball_csv}")
     print(f"  Rallies     : {rallies_path}")
-    print(f"  Merged      : {merged_path}")
-    if not skip_render:
+    print(f"  Merged      : {merged_path}  (includes touches)")
+    if do_render and not skip_render:
         print(f"  Rendered    : {render_path}")

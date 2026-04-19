@@ -54,3 +54,4 @@ htmlcov/
 # Viewer build output and node modules
 viewer/dist/
 viewer/node_modules/
+.wrangler/*

@@ -1,0 +1,22 @@
+{
+  "rally_00": {
+    "name": "files/egagnzxnybhi",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/egagnzxnybhi",
+    "expires_at": "2026-04-05 19:50:44.360529+00:00"
+  },
+  "rally_01": {
+    "name": "files/xzn8ptp35ixf",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/xzn8ptp35ixf",
+    "expires_at": "2026-04-05 19:52:15.842519+00:00"
+  },
+  "rally_02": {
+    "name": "files/6gd36k227jy1",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/6gd36k227jy1",
+    "expires_at": "2026-04-05 19:52:56.805940+00:00"
+  },
+  "rally_00_analytics": {
+    "name": "files/pow1txfms4g4",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/pow1txfms4g4",
+    "expires_at": "2026-04-05 20:05:28.599086+00:00"
+  }
+}

@@ -80,7 +80,15 @@ Independent — can run at any time on the raw or rendered video.
 
 ```
 beach analyze  →  *_actions.json    actions analyzed via Gemini
+    │
+    └─ beach fix-player-ids  →  *_fixed.json   player IDs corrected using touches.json
 ```
+
+`beach fix-player-ids` patches the `player_id` field in every event by
+matching the LLM timestamp to the nearest entry in the rally's
+`touches.json`.  It adds diagnostic fields (`original_player_id`,
+`corrected`, `delta_sec`, `touch_angle_deg`) so you can audit every
+correction.  Run `beach detect-touches` first.
 
 ### Ground truth
 
@@ -92,8 +100,38 @@ beach annotate-gt  →  *_gt.json    players annotated frame-by-frame (browser U
 
 ---
 
+### Rally splitting, touch detection & action correction pipeline
+
 ```
-beach serve  →  viewer at localhost:8080
+beach split-rallies  →  rally_XX/ dirs
+    │
+    ├─ beach detect-touches  →  rally_XX/touches.json    touch events per rally
+    │                            rally_XX/touches/        thumbnail frames per touch
+    │
+    └─ beach analyze         →  *_actions.json
+            │
+            └─ beach fix-player-ids  →  *_fixed.json
+```
+
+> **Shortcut — `beach split-rallies --detect-touches`** = split + detect touches in one step
+>
+> ```bash
+> beach split-rallies --video clip.mp4 --detect-touches
+> beach split-rallies --video clip.mp4 --detect-touches --no-thumbnails  # skip thumbnail frames
+> ```
+
+`beach detect-touches` can also be run stand-alone — on a single rally or on
+all rallies for a video:
+
+```bash
+# Single rally:
+beach detect-touches --rally-dir videos/GH021569_court_rallies/rally_00
+
+# All rallies for a video:
+beach detect-touches --video videos/GH021569_court.mp4
+
+# Skip rallies that already have touches.json:
+beach detect-touches --video videos/GH021569_court.mp4 --skip-existing
 ```
 
 ### Individual steps
@@ -481,10 +519,25 @@ beach analytics-render Analytics rendered onto video → *_analytics.mp4
                          (players + ball + rally markers overlay)
 ```
 
+### Primary steps — rally splitting & touch detection
+```
+beach split-rallies    Per-rally video clips + JSON slices → rally_XX/
+                         --detect-touches   also run touch detection on every rally dir
+                         --no-thumbnails    skip thumbnail extraction (with --detect-touches)
+beach detect-touches   Ball touch events detected per rally → rally_XX/touches.json
+                         --rally-dir <dir>   single rally directory
+                         --video <video>     all rally_XX/ dirs under <stem>_rallies/
+                         --no-thumbnails     skip ffmpeg thumbnail extraction
+                         --skip-existing     skip rallies that already have touches.json
+```
+
 ### Primary steps — actions pipeline
 ```
 beach analyze          Actions analyzed via Gemini → *_actions.json
 beach compare          Action JSON scored vs reference (timestamp matching)
+beach fix-player-ids   Player IDs corrected using touches.json → *_fixed.json
+                         --rallies-dir <dir>   override default rally root
+                         --rally-id <id>       override inferred rally id
 ```
 
 ### Primary steps — ground truth
@@ -505,6 +558,9 @@ beach analytics        Analytics pipeline: ball-track + detect-rallies + merge +
                          --skip-rallies     reuse existing *_rallies.json
                          --skip-merge       reuse existing *_merged.json
                          --skip-render      data files only, no video output
+beach split-rallies    Split + optionally detect touches:
+                         --detect-touches   run touch detection after splitting
+                         --no-thumbnails    skip thumbnail extraction
 ```
 
 ### Viewer

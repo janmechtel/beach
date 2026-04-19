@@ -22,6 +22,9 @@ better folder management / currently there is a lot of data lying around
   - currently with LLM ? maybe we can do something simpler with a classifier on the cropped video? or maybe we can do something with the ball tracking data? and maybe just get the player closest to the ball = the one doing the action?
   - here we might want chunking to keep context small
 
+- run should not render output video by default
+-
+
 # viewer/editor
 
 dual purpose, later = viewing only,
@@ -34,3 +37,17 @@ ealier = edit ground truth data
 How is the player detection done vs. how it's done in my script?
 
 How can we make the player detection more robust?
+
+
+I want to run action identification on a rally clip
+
+
+
+
+
+
+
+In the viewer I want to see it back with the full video to avoid loading
+
+
+no trackin detections should ask for trackin? position?

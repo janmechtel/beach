@@ -23,6 +23,7 @@ ActionType = Literal[
     "Block",
     "Free Ball Sent",
     "Free Ball Received",
+    "Not a touch",
 ]
 
 

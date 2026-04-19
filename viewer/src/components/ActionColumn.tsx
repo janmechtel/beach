@@ -3,7 +3,6 @@ import ActionRow from "./ActionRow";
 import { useActions } from "../hooks/useActions";
 import type { Action } from "../lib/types";
 import { ACTION_TYPES, PLAYER_IDS } from "../lib/types";
-import { cn } from "../lib/utils";
 
 interface Props {
   stem: string;
@@ -36,17 +35,15 @@ export default function ActionColumn({
   const [selectedFile, setSelectedFile] = useState(initialFile ?? availableFiles[0] ?? "");
   const [filterPlayer, setFilterPlayer] = useState("");
   const [filterAction, setFilterAction] = useState("");
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const [actionsState, actionsControls] = useActions();
-  const { actions, dirty, saveState, error } = actionsState;
+  const { actions, error } = actionsState;
 
   // Load on file change
   useEffect(() => {
     if (selectedFile && stem) {
       actionsControls.load(stem, selectedFile);
-      setEditingIndex(null);
     }
   }, [stem, selectedFile]);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -119,27 +116,6 @@ export default function ActionColumn({
     },
     [playClip]
   );
-  const handleSaveEdit = useCallback(
-    (globalIndex: number, patch: Partial<Action>) => {
-      actionsControls.update(globalIndex, patch);
-      setEditingIndex(null);
-    },
-    [actionsControls]
-  );
-
-  const handleDelete = useCallback(
-    (globalIndex: number) => {
-      if (!confirm("Delete this action?")) return;
-      actionsControls.remove(globalIndex);
-      setEditingIndex(null);
-    },
-    [actionsControls]
-  );
-
-  const handleSave = useCallback(async () => {
-    if (!dirty) return;
-    await actionsControls.save(stem, selectedFile);
-  }, [dirty, actionsControls, stem, selectedFile]);
 
   // Unique player IDs and action types actually present in this file
   const presentPlayers = useMemo(
@@ -147,25 +123,9 @@ export default function ActionColumn({
     [actions]
   );
   const presentActions = useMemo(
-    () => ACTION_TYPES.filter((t) => actions.some((a) => a.action === t)),
+    () => ACTION_TYPES.filter((t) => actions.some((a: Action) => a.action === t)),
     [actions]
   );
-
-  // Map filtered index back to global index
-  const globalIndexOf = useCallback(
-    (filteredIdx: number): number => {
-      const target = filtered[filteredIdx];
-      return actions.indexOf(target);
-    },
-    [filtered, actions]
-  );
-
-  const saveLabel =
-    saveState === "saving"
-      ? "Saving…"
-      : saveState === "saved"
-      ? "Saved"
-      : "Save";
 
   return (
     <div className="flex flex-col border border-border rounded-lg overflow-hidden min-w-0 flex-1 bg-card">
@@ -184,21 +144,6 @@ export default function ActionColumn({
               </option>
             ))}
           </select>
-
-          <button
-            onClick={handleSave}
-            disabled={!dirty || saveState === "saving"}
-            className={cn(
-              "text-xs px-2 py-1 rounded border transition-colors flex-shrink-0",
-              dirty && saveState !== "saving"
-                ? "border-blue-500 text-blue-400 hover:bg-blue-500/10"
-                : saveState === "saved"
-                ? "border-green-600 text-green-400"
-                : "border-border text-muted-foreground opacity-50"
-            )}
-          >
-            {saveLabel}
-          </button>
 
           {canClose && (
             <button
@@ -266,24 +211,15 @@ export default function ActionColumn({
 
       {/* Action list */}
       <div ref={listRef} className="flex-1 overflow-y-auto p-1 space-y-0.5">
-        {filtered.map((action, filteredIdx) => {
-          const gIdx = globalIndexOf(filteredIdx);
-          return (
-            <div key={`${gIdx}-${action.timestamp_sec}`} data-row>
-              <ActionRow
-                action={action}
-                index={gIdx}
-                isActive={filteredIdx === nearestIdx}
-                isEditing={editingIndex === gIdx}
-                onClick={() => handleRowClick(filteredIdx)}
-                onEdit={() => setEditingIndex(gIdx)}
-                onSave={(patch) => handleSaveEdit(gIdx, patch)}
-                onDelete={() => handleDelete(gIdx)}
-                onCancelEdit={() => setEditingIndex(null)}
-              />
-            </div>
-          );
-        })}
+        {filtered.map((action, filteredIdx) => (
+          <div key={`${filteredIdx}-${action.timestamp_sec}`} data-row>
+            <ActionRow
+              action={action}
+              isActive={filteredIdx === nearestIdx}
+              onClick={() => handleRowClick(filteredIdx)}
+            />
+          </div>
+        ))}
         {filtered.length === 0 && actions.length > 0 && (
           <p className="text-xs text-muted-foreground text-center py-4">
             No actions match the current filter.

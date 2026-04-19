@@ -46,6 +46,14 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+
+from beach.detect_touches import (
+    compute_velocities,
+    detect_touches as _detect_touches,
+    deduplicate_events,
+    format_touches,
+    print_summary,
+)
 from typing import Optional
 
 import click
@@ -170,12 +178,21 @@ def build_merged(
             "players": players,
         })
 
+    # --- Detect touches ---
+    vels = compute_velocities(merged_frames)
+    raw_events = _detect_touches(merged_frames, vels)
+    events = deduplicate_events(raw_events)
+    touches = format_touches(events)
+    print_summary(events, output_path.stem)
+    print(f"  {len(touches)} touch event(s) detected")
+
     # --- Write output ---
     output = {
         "fps": fps,
         "total_frames": total,
         "proximity_threshold_px": PROXIMITY_THRESHOLD_PX,
         "rallies": rallies,
+        "touches": touches,
         "frames": merged_frames,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
